@@ -5,92 +5,37 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
 	"strings"
 	"sync"
 	"time"
 )
 
+func Handler(conn io.ReadWriteCloser) *Device {
+	dev := &Device{
+		conn:   conn,
+		readCh: make(chan string),
+		execCh: make(chan func()),
+		Log:    log.New(ioutil.Discard, "[iotfwdrv] ", log.LstdFlags),
+	}
+
+	dev.executor()
+	dev.reader()
+	dev.connected = true
+	return dev
+}
+
 type Device struct {
-	Conn         io.ReadWriteCloser
-	onConnect    func()
-	onDisconnect func()
-	readCh       chan string
-	execCh       chan func()
-	err          error
+	conn      io.ReadWriteCloser
+	readCh    chan string
+	execCh    chan func()
+	connected bool
+	Log       *log.Logger
 }
 
-func (d *Device) OnConnect(fn func()) {
-	d.onConnect = fn
-	if d.Connected() {
-		d.onConnect()
-	}
-}
-
-func (d *Device) OnDisconnect(fn func()) {
-	d.onDisconnect = fn
-	if !d.Connected() {
-		d.onDisconnect()
-	}
-}
-
-func (d Device) Connected() bool {
-	return d.execCh != nil
-}
-
-func (d *Device) Handle() error {
-	if d.execCh != nil {
-		return errors.New("already running")
-	}
-	d.execCh = make(chan func())
-	d.readCh = make(chan string)
-	wg := &sync.WaitGroup{}
-	wg.Add(2)
-	go func() {
-		defer func() {
-			wg.Done()
-		}()
-		for {
-			select {
-			case fn, ok := <-d.execCh:
-				if !ok {
-					return
-				}
-				if fn != nil {
-					fn()
-				}
-			case <-time.After(5 * time.Second):
-				if _, err := d.exec(Packet{Name: "ping"}); err != nil {
-					d.err = err
-					return
-				}
-			}
-		}
-	}()
-	d.execCh <- func() {
-		d.reader(wg)
-	}
-	if d.onConnect != nil {
-		d.onConnect()
-	}
-	wg.Wait()
-	d.readCh = nil
-	d.Conn = nil
-	err := d.err
-	d.err = nil
-	d.execCh = nil
-	if d.onDisconnect != nil {
-		d.onDisconnect()
-	}
-	return err
-}
-
-func (d *Device) isClosed() bool {
-	select {
-	case <-d.execCh:
-		return true
-	default:
-	}
-	return false
+func (d *Device) Connected() bool {
+	return d.connected
 }
 
 func (d *Device) Exec(cmd Packet) (res []Packet, err error) {
@@ -100,6 +45,9 @@ func (d *Device) Exec(cmd Packet) (res []Packet, err error) {
 	defer func() {
 		if recover() != nil {
 			err = errors.New("not connected")
+		}
+		if err != nil {
+			d.connected = false
 		}
 	}()
 
@@ -112,7 +60,9 @@ func (d *Device) Exec(cmd Packet) (res []Packet, err error) {
 }
 
 func (d *Device) exec(cmd Packet) (res []Packet, err error) {
-	if _, err = fmt.Fprintln(d.Conn, Encode(cmd)); err != nil {
+	encoded := Encode(cmd)
+	d.Log.Println(">", encoded)
+	if _, err = fmt.Fprintln(d.conn, encoded); err != nil {
 		return
 	}
 	for {
@@ -140,22 +90,59 @@ func (d *Device) exec(cmd Packet) (res []Packet, err error) {
 	}
 }
 
-func (d *Device) reader(wg *sync.WaitGroup) {
-	scanner := bufio.NewScanner(d.Conn)
+func (d *Device) executor() {
 	go func() {
+		d.Log.Println("executor start")
 		defer func() {
-			wg.Done()
+			d.Log.Println("executor stop")
+		}()
+		for {
+			select {
+			case fn, ok := <-d.execCh:
+				if !ok {
+					return
+				}
+				if fn != nil {
+					fn()
+				}
+			case <-time.After(5 * time.Second):
+				if d.Connected() {
+					if _, err := d.exec(Packet{Name: "ping"}); err != nil {
+						d.connected = false
+						return
+					}
+				}
+			}
+		}
+	}()
+}
+
+func (d *Device) handleAsync(cmd Packet) {
+
+}
+
+func (d *Device) reader() {
+	scanner := bufio.NewScanner(d.conn)
+	go func() {
+		d.Log.Println("reader start")
+		defer func() {
+			d.Log.Println("reader stop")
 		}()
 		for scanner.Scan() {
 			msg := scanner.Text()
 			if strings.HasPrefix(msg, "@") {
-				fmt.Println(msg)
+				if cmd, err := Decode(msg); err == nil {
+					d.handleAsync(cmd)
+				} else {
+					d.Log.Println("unable to decode async message", err)
+				}
 			} else {
+				d.Log.Println("<", msg)
 				d.readCh <- msg
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			d.err = err
+			d.connected = false
 			close(d.execCh)
 		}
 		close(d.readCh)
