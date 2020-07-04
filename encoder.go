@@ -7,11 +7,11 @@ import (
 )
 
 func Encode(p Packet) string {
-	s := make([]string, 0, len(p.Args)+1)
-	s = append(s, sanitize(p.Name))
+	s := make([]string, 0, len(p.Args())+1)
+	s = append(s, sanitize(p.Cmd()))
 	if p.Args != nil {
-		for k, v := range p.Args {
-			s = append(s, encodeKey(k, v))
+		for _, v := range p.Args() {
+			s = append(s, encodeKey(v.Key, v.Value))
 		}
 	}
 	return fmt.Sprint(strings.Join(s, " "))
@@ -37,8 +37,7 @@ var tokDecodeValue tokenizerState = 2
 
 func Decode(str string) (Packet, error) {
 	var state tokenizerState
-	var p Packet
-	p.Args = make(map[string]interface{})
+	var p RawPacket
 	var key string
 	var value string
 	var inQuote bool
@@ -46,7 +45,7 @@ func Decode(str string) (Packet, error) {
 		switch state {
 		case tokDecodeCommand:
 			if c != ' ' {
-				p.Name = p.Name + string(c)
+				p.SetCommand(p.Cmd() + string(c))
 			} else {
 				state++
 			}
@@ -82,7 +81,7 @@ func Decode(str string) (Packet, error) {
 				}
 			case ' ':
 				if !inQuote {
-					p.Args[key] = value
+					p.Set(key, value)
 					key, value = "", ""
 					inQuote = false
 					state = tokDecodeKey
@@ -95,7 +94,7 @@ func Decode(str string) (Packet, error) {
 		}
 	}
 	if key != "" {
-		p.Args[key] = value
+		p.args[key] = value
 	}
 	return p, nil
 }

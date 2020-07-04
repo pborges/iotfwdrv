@@ -107,7 +107,7 @@ func (d *Device) executor() {
 				}
 			case <-time.After(5 * time.Second):
 				if d.Connected() {
-					if _, err := d.exec(Packet{Name: "ping"}); err != nil {
+					if _, err := d.exec(PingPacket{}); err != nil {
 						d.connected = false
 						return
 					}

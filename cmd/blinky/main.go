@@ -31,18 +31,18 @@ func main() {
 }
 
 func work(dev *iotfwdrv.Device) (err error) {
-	_, err = dev.Exec(iotfwdrv.Packet{Name: "set", Args: map[string]interface{}{"name": "gpio.0", "value": true}})
+	_, err = dev.Exec(iotfwdrv.SetPacket{Key: "gpio.0", Value: true})
 	if err != nil {
 		return
 	}
 
-	_, err = dev.Exec(iotfwdrv.Packet{Name: "set", Args: map[string]interface{}{"name": "gpio.0", "value": false, "disconnect": true}})
+	_, err = dev.Exec(iotfwdrv.SetPacket{Key: "gpio.0", Value: false, Disconnect: true})
 	if err != nil {
 		return
 	}
 
 	for i := 0; ; i++ {
-		_, err = dev.Exec(iotfwdrv.Packet{Name: "set", Args: map[string]interface{}{"name": "gpio.1", "value": i%2 > 0}})
+		_, err = dev.Exec(iotfwdrv.SetPacket{Key: "gpio.1", Value: i%2 > 0})
 		if err != nil {
 			return
 		}
