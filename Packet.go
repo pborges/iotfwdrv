@@ -53,15 +53,17 @@ type RawPacket struct {
 	args map[string]interface{}
 }
 
-func (p *RawPacket) Set(key string, value interface{}) {
+func (p *RawPacket) Set(key string, value interface{}) *RawPacket {
 	if p.args == nil {
 		p.args = make(map[string]interface{})
 	}
 	p.args[key] = value
+	return p
 }
 
-func (p RawPacket) SetCommand(cmd string) {
+func (p *RawPacket) SetCommand(cmd string) *RawPacket {
 	p.cmd = cmd
+	return p
 }
 
 func (p RawPacket) Cmd() string {
