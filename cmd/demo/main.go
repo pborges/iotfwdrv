@@ -18,9 +18,12 @@ func main() {
 			for dev := iotfwdrv.Handler(conn); dev.Connected(); {
 				dev.Log.SetOutput(os.Stdout)
 				dev.Log.SetPrefix("[" + conn.RemoteAddr().String() + "] ")
-				if err := work(dev); err != nil {
+
+				// do some work
+				if err := subscribe(dev); err != nil {
 					fmt.Println("error working", err)
 				}
+				fmt.Println("work done")
 			}
 			fmt.Println("disconnected")
 		} else {
@@ -30,7 +33,7 @@ func main() {
 	}
 }
 
-func work(dev *iotfwdrv.Device) (err error) {
+func blinky(dev *iotfwdrv.Device) (err error) {
 	_, err = dev.Exec(iotfwdrv.SetPacket{Key: "gpio.0", Value: true})
 	if err != nil {
 		return
@@ -48,4 +51,19 @@ func work(dev *iotfwdrv.Device) (err error) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+func subscribe(dev *iotfwdrv.Device) (err error) {
+	if _, err = dev.Exec(iotfwdrv.SubscribePacket{Filter: "*"}); err != nil {
+		return
+	}
+
+	sub := dev.Subscribe("*")
+	for p := range sub.C {
+		switch cmd := p.(type) {
+		case iotfwdrv.AttributeUpdatePacket:
+			fmt.Println("update", cmd.Name, cmd.Type, cmd.Value)
+		}
+	}
+	return
 }

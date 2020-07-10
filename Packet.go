@@ -48,12 +48,48 @@ func (p PingPacket) Args() []Arg {
 	return []Arg{}
 }
 
-type RawPacket struct {
+type InfoPacket struct {
+}
+
+func (p InfoPacket) Cmd() string {
+	return "info"
+}
+
+func (p InfoPacket) Args() []Arg {
+	return []Arg{}
+}
+
+type ListPacket struct {
+}
+
+func (p ListPacket) Cmd() string {
+	return "list"
+}
+
+func (p ListPacket) Args() []Arg {
+	return []Arg{}
+}
+
+type SubscribePacket struct {
+	Filter string
+}
+
+func (p SubscribePacket) Cmd() string {
+	return "sub"
+}
+
+func (p SubscribePacket) Args() []Arg {
+	return []Arg{
+		{Key: "filter", Value: p.Filter},
+	}
+}
+
+type rawPacket struct {
 	cmd  string
 	args map[string]interface{}
 }
 
-func (p *RawPacket) Set(key string, value interface{}) *RawPacket {
+func (p *rawPacket) Set(key string, value interface{}) *rawPacket {
 	if p.args == nil {
 		p.args = make(map[string]interface{})
 	}
@@ -61,19 +97,41 @@ func (p *RawPacket) Set(key string, value interface{}) *RawPacket {
 	return p
 }
 
-func (p *RawPacket) SetCommand(cmd string) *RawPacket {
+func (p *rawPacket) Get(key string) interface{} {
+	return p.args[key]
+}
+
+func (p *rawPacket) SetCommand(cmd string) *rawPacket {
 	p.cmd = cmd
 	return p
 }
 
-func (p RawPacket) Cmd() string {
+func (p rawPacket) Cmd() string {
 	return p.cmd
 }
 
-func (p RawPacket) Args() []Arg {
+func (p rawPacket) Args() []Arg {
 	args := make([]Arg, 0, len(p.args))
 	for k, v := range p.args {
 		args = append(args, Arg{Key: k, Value: v})
 	}
 	return args
+}
+
+type AttributeUpdatePacket struct {
+	Name  string
+	Type  string
+	Value interface{}
+}
+
+func (p AttributeUpdatePacket) Cmd() string {
+	return "@attr"
+}
+
+func (p AttributeUpdatePacket) Args() []Arg {
+	return []Arg{
+		{Key: "name", Value: p.Name},
+		{Key: "type", Value: p.Name},
+		{Key: "value", Value: p.Value},
+	}
 }
