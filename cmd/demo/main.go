@@ -20,7 +20,7 @@ func main() {
 				dev.Log.SetPrefix("[" + conn.RemoteAddr().String() + "] ")
 
 				// do some work
-				if err := subscribe(dev); err != nil {
+				if err := blinky(dev); err != nil {
 					fmt.Println("error working", err)
 				}
 				fmt.Println("work done")

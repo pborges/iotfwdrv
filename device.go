@@ -194,16 +194,19 @@ func (d *Device) handleAsync(cmd rawPacket) {
 			d.Log.Println("unknown @attr type", tipe)
 		}
 		d.execCh <- func() {
+			slowSubscribers := make([]*Subscription, 0, len(d.subscriptions))
 			for _, sub := range d.subscriptions {
 				if KeyMatch(cmd.Get("name").(string), sub.filter) {
 					select {
 					case sub.ch <- packet:
-						d.Log.Println("fanout")
 					default:
-						d.Log.Println("unable to fanout")
-						//TODO kill the subscription
+						slowSubscribers = append(slowSubscribers, sub)
 					}
 				}
+			}
+			for _, sub := range slowSubscribers {
+				sub.Close()
+				d.Log.Println("closing slow subscriber", sub)
 			}
 		}
 	default:
