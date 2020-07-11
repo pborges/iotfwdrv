@@ -14,13 +14,17 @@ import (
 )
 
 type Subscription struct {
-	C      chan Packet
+	ch     chan Packet
 	device *Device
 	filter string
 }
 
+func (s *Subscription) Chan() <-chan Packet {
+	return s.ch
+}
+
 func (s *Subscription) Close() {
-	close(s.C)
+	close(s.ch)
 	s.device.execCh <- func() {
 		for i, sub := range s.device.subscriptions {
 			if s == sub {
@@ -43,6 +47,7 @@ func Handler(conn io.ReadWriter) *Device {
 	dev.executor()
 	dev.reader()
 	dev.connected = true
+
 	return dev
 }
 
@@ -53,6 +58,7 @@ type Device struct {
 	execCh        chan func()
 	connected     bool
 	subscriptions []*Subscription
+	subscribed    bool
 }
 
 func (d *Device) Connected() bool {
@@ -84,9 +90,14 @@ func (d *Device) Subscribe(filter string) *Subscription {
 	sub := &Subscription{
 		device: d,
 		filter: filter,
-		C:      make(chan Packet),
+		ch:     make(chan Packet, 10),
 	}
 	d.execCh <- func() {
+		if !d.subscribed {
+			if _, err := d.exec(SubscribePacket{Filter: "*"}); err != nil {
+				fmt.Println(err)
+			}
+		}
 		d.subscriptions = append(d.subscriptions, sub)
 	}
 	return sub
@@ -153,32 +164,45 @@ func (d *Device) executor() {
 func (d *Device) handleAsync(cmd rawPacket) {
 	switch cmd.Cmd() {
 	case "@attr":
-		valueUpdate := AttributeUpdatePacket{
-			Name: cmd.Get("name").(string),
-			Type: cmd.Get("type").(string),
-		}
-		switch valueUpdate.Type {
+		var packet Packet
+		tipe := cmd.Get("type").(string)
+		switch tipe {
 		case "bool":
-			valueUpdate.Value = cmd.Get("value") == "true"
+			val, _ := strconv.ParseBool(cmd.Get("value").(string))
+			packet = BooleanAttributeUpdate{
+				Name:  cmd.Get("name").(string),
+				Value: val,
+			}
 		case "unsigned":
-			valueUpdate.Value, _ = strconv.ParseUint(cmd.Get("value").(string), 10, 64)
+			val, _ := strconv.ParseUint(cmd.Get("value").(string), 10, 64)
+			packet = UnsignedAttributeUpdate{
+				Name:  cmd.Get("name").(string),
+				Value: val,
+			}
 		case "integer":
-			valueUpdate.Value, _ = strconv.ParseInt(cmd.Get("value").(string), 10, 64)
+			val, _ := strconv.ParseInt(cmd.Get("value").(string), 10, 64)
+			packet = IntegerAttributeUpdate{
+				Name:  cmd.Get("name").(string),
+				Value: val,
+			}
 		case "string":
-			valueUpdate.Value, _ = cmd.Get("value").(string)
+			packet = StringAttributeUpdate{
+				Name:  cmd.Get("name").(string),
+				Value: cmd.Get("value").(string),
+			}
 		default:
-			d.Log.Println("unknown @attr type", valueUpdate.Type)
+			d.Log.Println("unknown @attr type", tipe)
 		}
 		d.execCh <- func() {
 			for _, sub := range d.subscriptions {
-				if KeyMatch(cmd.Get("value").(string), sub.filter) {
-					go func(sub *Subscription, cmd Packet) {
-						select {
-						case sub.C <- cmd:
-						case <-time.After(5 * time.Second):
-							d.Log.Println("timeout fanning out subscription to", sub.filter)
-						}
-					}(sub, valueUpdate)
+				if KeyMatch(cmd.Get("name").(string), sub.filter) {
+					select {
+					case sub.ch <- packet:
+						d.Log.Println("fanout")
+					default:
+						d.Log.Println("unable to fanout")
+						//TODO kill the subscription
+					}
 				}
 			}
 		}
@@ -219,6 +243,6 @@ func (d *Device) reader() {
 func (d *Device) disconnect() {
 	d.Log.Println("disconnect")
 	for _, sub := range d.subscriptions {
-		close(sub.C)
+		close(sub.ch)
 	}
 }

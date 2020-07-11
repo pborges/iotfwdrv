@@ -54,15 +54,13 @@ func blinky(dev *iotfwdrv.Device) (err error) {
 }
 
 func subscribe(dev *iotfwdrv.Device) (err error) {
-	if _, err = dev.Exec(iotfwdrv.SubscribePacket{Filter: "*"}); err != nil {
-		return
-	}
-
-	sub := dev.Subscribe("*")
-	for p := range sub.C {
+	sub := dev.Subscribe(">")
+	for p := range sub.Chan() {
 		switch cmd := p.(type) {
-		case iotfwdrv.AttributeUpdatePacket:
-			fmt.Println("update", cmd.Name, cmd.Type, cmd.Value)
+		case iotfwdrv.BooleanAttributeUpdate:
+			fmt.Println("update", cmd.Name, cmd.Value)
+		case iotfwdrv.UnsignedAttributeUpdate:
+			fmt.Println("update", cmd.Name, cmd.Value)
 		}
 	}
 	return

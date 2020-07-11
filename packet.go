@@ -118,20 +118,66 @@ func (p rawPacket) Args() []Arg {
 	return args
 }
 
-type AttributeUpdatePacket struct {
+type BooleanAttributeUpdate struct {
 	Name  string
-	Type  string
-	Value interface{}
+	Value bool
 }
 
-func (p AttributeUpdatePacket) Cmd() string {
+func (p BooleanAttributeUpdate) Cmd() string {
 	return "@attr"
 }
 
-func (p AttributeUpdatePacket) Args() []Arg {
+func (p BooleanAttributeUpdate) Args() []Arg {
 	return []Arg{
 		{Key: "name", Value: p.Name},
-		{Key: "type", Value: p.Name},
+		{Key: "value", Value: p.Value},
+	}
+}
+
+type IntegerAttributeUpdate struct {
+	Name  string
+	Value int64
+}
+
+func (p IntegerAttributeUpdate) Cmd() string {
+	return "@attr"
+}
+
+func (p IntegerAttributeUpdate) Args() []Arg {
+	return []Arg{
+		{Key: "name", Value: p.Name},
+		{Key: "value", Value: p.Value},
+	}
+}
+
+type UnsignedAttributeUpdate struct {
+	Name  string
+	Value uint64
+}
+
+func (p UnsignedAttributeUpdate) Cmd() string {
+	return "@attr"
+}
+
+func (p UnsignedAttributeUpdate) Args() []Arg {
+	return []Arg{
+		{Key: "name", Value: p.Name},
+		{Key: "value", Value: p.Value},
+	}
+}
+
+type StringAttributeUpdate struct {
+	Name  string
+	Value string
+}
+
+func (p StringAttributeUpdate) Cmd() string {
+	return "@attr"
+}
+
+func (p StringAttributeUpdate) Args() []Arg {
+	return []Arg{
+		{Key: "name", Value: p.Name},
 		{Key: "value", Value: p.Value},
 	}
 }
