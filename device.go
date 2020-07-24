@@ -36,7 +36,7 @@ func (s *Subscription) Close() {
 	}
 }
 
-func Handler(conn io.ReadWriter) *Device {
+func Handler(conn io.ReadWriteCloser) *Device {
 	dev := &Device{
 		conn:   conn,
 		readCh: make(chan string),
@@ -48,17 +48,23 @@ func Handler(conn io.ReadWriter) *Device {
 	dev.reader()
 	dev.connected = true
 
+	// TODO fix this hacky BS
+	res, _ := dev.exec(InfoPacket{})
+	dev.info = res[0].(rawPacket)
 	return dev
 }
 
 type Device struct {
 	Log           *log.Logger
-	conn          io.ReadWriter
+	FlushFn       func() error
+	conn          io.ReadWriteCloser
 	readCh        chan string
 	execCh        chan func()
 	connected     bool
 	subscriptions []*Subscription
 	subscribed    bool
+
+	info rawPacket
 }
 
 func (d *Device) Connected() bool {
@@ -109,6 +115,11 @@ func (d *Device) exec(cmd Packet) (res []Packet, err error) {
 	if _, err = fmt.Fprintln(d.conn, encoded); err != nil {
 		return
 	}
+	if d.FlushFn != nil {
+		if err = d.FlushFn(); err != nil {
+			return
+		}
+	}
 	for {
 		select {
 		case r, ok := <-d.readCh:
@@ -127,7 +138,7 @@ func (d *Device) exec(cmd Packet) (res []Packet, err error) {
 				}
 				res = append(res, c)
 			}
-		case <-time.After(1 * time.Second):
+		case <-time.After(2 * time.Second):
 			err = errors.New("timeout")
 			return
 		}
@@ -137,8 +148,10 @@ func (d *Device) exec(cmd Packet) (res []Packet, err error) {
 func (d *Device) executor() {
 	go func() {
 		d.Log.Println("executor start")
+		var err error
 		defer func() {
-			d.Log.Println("executor stop")
+			d.Log.Println("executor stop", err)
+			d.connected = false
 		}()
 		for {
 			select {
@@ -151,8 +164,7 @@ func (d *Device) executor() {
 				}
 			case <-time.After(5 * time.Second):
 				if d.Connected() {
-					if _, err := d.exec(PingPacket{}); err != nil {
-						d.connected = false
+					if _, err = d.exec(PingPacket{}); err != nil {
 						return
 					}
 				}
@@ -161,7 +173,7 @@ func (d *Device) executor() {
 	}()
 }
 
-func (d *Device) handleAsync(cmd rawPacket) {
+func (d *Device) handleAsync(cmd rawPacket) (err error) {
 	switch cmd.Cmd() {
 	case "@attr":
 		var packet Packet
@@ -179,9 +191,15 @@ func (d *Device) handleAsync(cmd rawPacket) {
 				Name:  cmd.Get("name").(string),
 				Value: val,
 			}
-		case "integer":
+		case "int":
 			val, _ := strconv.ParseInt(cmd.Get("value").(string), 10, 64)
 			packet = IntegerAttributeUpdate{
+				Name:  cmd.Get("name").(string),
+				Value: val,
+			}
+		case "double":
+			val, _ := strconv.ParseFloat(cmd.Get("value").(string), 64)
+			packet = DoubleAttributeUpdate{
 				Name:  cmd.Get("name").(string),
 				Value: val,
 			}
@@ -193,45 +211,53 @@ func (d *Device) handleAsync(cmd rawPacket) {
 		default:
 			d.Log.Println("unknown @attr type", tipe)
 		}
-		d.execCh <- func() {
-			slowSubscribers := make([]*Subscription, 0, len(d.subscriptions))
-			for _, sub := range d.subscriptions {
-				if KeyMatch(cmd.Get("name").(string), sub.filter) {
-					select {
-					case sub.ch <- packet:
-					default:
-						slowSubscribers = append(slowSubscribers, sub)
-					}
-				}
-			}
-			for _, sub := range slowSubscribers {
-				sub.Close()
-				d.Log.Println("closing slow subscriber", sub)
-			}
-		}
+		d.Log.Printf("fanout %+v", cmd)
+		d.fanout(cmd.Get("name").(string), d.subscriptions, packet)
 	default:
 		d.Log.Println("unhandled async command,", cmd.Cmd())
+	}
+	return
+}
+
+func (d *Device) fanout(key string, subs []*Subscription, transmuted Packet) {
+	slowSubscribers := make([]*Subscription, 0, len(d.subscriptions))
+	for _, sub := range subs {
+		if KeyMatch(key, sub.filter) {
+			select {
+			case sub.ch <- transmuted:
+			default:
+				slowSubscribers = append(slowSubscribers, sub)
+			}
+		}
+	}
+	for _, sub := range slowSubscribers {
+		sub.Close()
+		d.Log.Println("closing slow subscriber", sub)
 	}
 }
 
 func (d *Device) reader() {
 	scanner := bufio.NewScanner(d.conn)
 	go func() {
+		var cmd rawPacket
+		var err error
 		d.Log.Println("reader start")
 		defer func() {
-			d.Log.Println("reader stop")
+			d.Log.Println("reader stop", err)
 			d.disconnect()
 		}()
 		for scanner.Scan() {
 			msg := scanner.Text()
+			d.Log.Println(">", msg)
 			if strings.HasPrefix(msg, "@") {
-				if cmd, err := Decode(msg); err == nil {
-					d.handleAsync(cmd)
+				if cmd, err = Decode(msg); err == nil {
+					if err = d.handleAsync(cmd); err != nil {
+						return
+					}
 				} else {
 					d.Log.Println("unable to decode async message", err)
 				}
 			} else {
-				d.Log.Println(">", msg)
 				d.readCh <- msg
 			}
 		}
@@ -245,7 +271,11 @@ func (d *Device) reader() {
 
 func (d *Device) disconnect() {
 	d.Log.Println("disconnect")
-	for _, sub := range d.subscriptions {
-		close(sub.ch)
-	}
+	//for _, sub := range d.subscriptions {
+	//	close(sub.ch)
+	//}
+}
+
+func (d *Device) Id() string {
+	return d.info.Get("id").(string)
 }

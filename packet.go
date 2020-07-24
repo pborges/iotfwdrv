@@ -150,6 +150,22 @@ func (p IntegerAttributeUpdate) Args() []Arg {
 	}
 }
 
+type DoubleAttributeUpdate struct {
+	Name  string
+	Value float64
+}
+
+func (p DoubleAttributeUpdate) Cmd() string {
+	return "@attr"
+}
+
+func (p DoubleAttributeUpdate) Args() []Arg {
+	return []Arg{
+		{Key: "name", Value: p.Name},
+		{Key: "value", Value: p.Value},
+	}
+}
+
 type UnsignedAttributeUpdate struct {
 	Name  string
 	Value uint64
