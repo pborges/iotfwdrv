@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
-	iotfwdrv2 "github.com/pborges/iotfwdrv"
-	"github.com/pborges/iotfwdrv/logtosheet"
+	"github.com/pborges/iotfwdrv"
+	"golang.org/x/net/context"
+	"google.golang.org/api/option"
+	"google.golang.org/api/sheets/v4"
 	"io"
 	"log"
 	"net"
@@ -11,10 +13,34 @@ import (
 	"time"
 )
 
-func main() {
-	var dev iotfwdrv2.Device
+func NewLogToSheet(credentialsFile string, sheetId string) (*Log, error) {
+	ctx := context.Background()
+	srv, err := sheets.NewService(ctx, option.WithCredentialsFile(credentialsFile), option.WithScopes(sheets.SpreadsheetsScope))
+	if err != nil {
+		return nil, err
+	}
+	return &Log{
+		sheetID: sheetId,
+		service: srv,
+	}, nil
+}
 
-	log2Sheet, err := logtosheet.New("logtosheet/logtosheet-1601418471376-2733e2db290e.json", "1wXF5dmuEjgjteTWZg0eRz72SBXU4PtHvt5naQBXR250")
+type Log struct {
+	sheetID string
+	service *sheets.Service
+}
+
+func (l Log) Append(range_ string, values ...interface{}) error {
+	_, err := l.service.Spreadsheets.Values.Append(l.sheetID, range_, &sheets.ValueRange{
+		Values: [][]interface{}{values},
+	}).ValueInputOption("RAW").Do()
+	return err
+}
+
+func main() {
+	var dev iotfwdrv.Device
+
+	log2Sheet, err := NewLogToSheet("logtosheet-1601418471376-2733e2db290e.json", "1wXF5dmuEjgjteTWZg0eRz72SBXU4PtHvt5naQBXR250")
 	if err != nil {
 		panic(err)
 	}

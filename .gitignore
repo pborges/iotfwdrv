@@ -1,4 +1,5 @@
 .idea
 *.iml
 _garbagebin/
-logtosheet/
+logtosheet*.json
+cmd/
