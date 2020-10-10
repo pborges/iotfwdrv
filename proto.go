@@ -12,17 +12,26 @@ var tokDecodeCommand tokenizerState = 0
 var tokDecodeKey tokenizerState = 1
 var tokDecodeValue tokenizerState = 2
 
-func Decode(str string) (rawPacket, error) {
+type packet struct {
+	Cmd   string
+	Args  map[string]string
+	Debug []string
+}
+
+func decode(str string) (packet, error) {
 	var state tokenizerState
-	var p rawPacket
 	var key string
 	var value string
 	var inQuote bool
+
+	p := packet{
+		Args: make(map[string]string),
+	}
 	for _, c := range str {
 		switch state {
 		case tokDecodeCommand:
 			if c != ' ' {
-				p.SetCommand(p.Cmd() + string(c))
+				p.Cmd = p.Cmd + string(c)
 			} else {
 				state++
 			}
@@ -58,7 +67,7 @@ func Decode(str string) (rawPacket, error) {
 				}
 			case ' ':
 				if !inQuote {
-					p.Set(key, value)
+					p.Args[key] = value
 					key, value = "", ""
 					inQuote = false
 					state = tokDecodeKey
@@ -71,17 +80,17 @@ func Decode(str string) (rawPacket, error) {
 		}
 	}
 	if key != "" {
-		p.args[key] = value
+		p.Args[key] = value
 	}
 	return p, nil
 }
 
-func Encode(p Packet) string {
-	s := make([]string, 0, len(p.Args())+1)
-	s = append(s, sanitize(p.Cmd()))
-	if p.Args() != nil {
-		for _, v := range p.Args() {
-			s = append(s, encodeKey(v.Key, v.Value))
+func encode(p packet) string {
+	s := make([]string, 0, len(p.Args)+1)
+	s = append(s, sanitize(p.Cmd))
+	if p.Args != nil {
+		for k, v := range p.Args {
+			s = append(s, encodeKey(k, v))
 		}
 	}
 	return fmt.Sprint(strings.Join(s, " "))

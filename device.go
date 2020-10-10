@@ -7,220 +7,264 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-type Subscription struct {
-	ch     chan Packet
-	device *Device
-	filter string
+var ErrNotConnected = errors.New("not connected")
+var ErrAlreadyStarted = errors.New("device already started")
+
+type Message struct {
+	Message string
+	Value   string
 }
 
-func (s *Subscription) Chan() <-chan Packet {
-	return s.ch
+type Metadata struct {
+	Key   string
+	Value string
 }
 
-func (s *Subscription) Close() {
-	close(s.ch)
-	s.device.execCh <- func() {
-		for i, sub := range s.device.subscriptions {
-			if s == sub {
-				s.device.subscriptions[i] = s.device.subscriptions[len(s.device.subscriptions)-1] // Copy last element to index i.
-				s.device.subscriptions[len(s.device.subscriptions)-1] = nil                       // Erase last element (write zero value).
-				s.device.subscriptions = s.device.subscriptions[:len(s.device.subscriptions)-1]   // Truncate slice.
-			}
-		}
-	}
-}
-
-func Handler(conn io.ReadWriteCloser) *Device {
-	dev := &Device{
-		conn:   conn,
-		readCh: make(chan string),
-		execCh: make(chan func()),
-		Log:    log.New(ioutil.Discard, "[iotfwdrv] ", log.LstdFlags),
-	}
-
-	dev.executor()
-	dev.reader()
-	dev.connected = true
-
-	// TODO fix this hacky BS
-	res, _ := dev.exec(InfoPacket{})
-	dev.info = res[0].(rawPacket)
-	return dev
+type Info struct {
+	ID          string
+	Name        string
+	Model       string
+	FirmwareVer Version
+	HardwareVer Version
+	Metadata    []Metadata
 }
 
 type Device struct {
-	Log           *log.Logger
-	FlushFn       func() error
-	conn          io.ReadWriteCloser
-	readCh        chan string
-	execCh        chan func()
-	connected     bool
-	subscriptions []*Subscription
-	subscribed    bool
-
-	info rawPacket
+	dialer             func() (io.ReadWriteCloser, error)
+	execCh             chan func()
+	inbound            chan string
+	conn               io.ReadWriteCloser
+	connected          bool
+	setup              sync.Once
+	subscriptions      []*Subscription
+	subscriptionsSetup bool
+	metadata           map[string]string
+	Log                *log.Logger
 }
 
-func (d *Device) Connected() bool {
-	return d.connected
+func (dev *Device) Connected() bool {
+	return dev.connected
 }
 
-func (d *Device) Exec(cmd Packet) (res []Packet, err error) {
-	wg := sync.WaitGroup{}
-	wg.Add(1)
+func (dev *Device) SetMetadata(key, value string) {
+	dev.exec(func() {
+		dev.metadata[key] = value
+	})
+}
+
+func (dev *Device) Start(dialer func() (io.ReadWriteCloser, error)) error {
+	var setup bool
+	dev.setup.Do(func() {
+		setup = true
+		if dev.Log == nil {
+			dev.Log = log.New(ioutil.Discard, "[iotfwdrv] ", log.LstdFlags)
+		}
+		dev.metadata = make(map[string]string)
+		dev.execCh = make(chan func())
+		dev.inbound = make(chan string)
+		dev.dialer = dialer
+
+		go dev.execHandler()
+		go func() {
+			for {
+				dev.reader()
+			}
+		}()
+	})
+	if !setup && dev.dialer != nil {
+		return ErrAlreadyStarted
+	}
+	return nil
+}
+
+func (dev *Device) synchronousWrite(cmd packet) (res []packet, err error) {
+	dev.exec(func() {
+		res, err = dev.write(cmd)
+	})
+	return
+}
+
+func (dev *Device) Set(name string, value interface{}) (err error) {
+	_, err = dev.synchronousWrite(packet{
+		Cmd: "set",
+		Args: map[string]string{
+			"name":  name,
+			"value": fmt.Sprint(value),
+		},
+	})
+	return
+}
+
+func (dev *Device) Execute(name string, args map[string]interface{}) (debug []string, err error) {
+	cmd := packet{
+		Cmd:  name,
+		Args: map[string]string{},
+	}
+	for k, v := range args {
+		cmd.Args[k] = fmt.Sprint(v)
+	}
+	var res []packet
+	res, err = dev.synchronousWrite(cmd)
+	for _, v := range res {
+		if v.Cmd == "debug" {
+			debug = append(debug, v.Args["msg"])
+		}
+	}
+	return
+}
+
+func (dev *Device) Info() (info Info, err error) {
+	dev.exec(func() {
+		var res []packet
+		res, err = dev.write(packet{
+			Cmd: "info",
+		})
+		if err != nil {
+			return
+		} else if len(res) <= 0 {
+			err = errors.New("unexpected info response length")
+		} else {
+			info.ID = res[0].Args["id"]
+			info.Name = res[0].Args["name"]
+			info.Model = res[0].Args["model"]
+			info.HardwareVer, err = parseVersion(res[0].Args["hw"])
+			if err != nil {
+				return
+			}
+			info.FirmwareVer, err = parseVersion(res[0].Args["ver"])
+			if err != nil {
+				return
+			}
+			for k, v := range dev.metadata {
+				info.Metadata = append(info.Metadata, Metadata{Key: k, Value: v})
+			}
+		}
+	})
+	return
+}
+
+func (dev *Device) SetOnDisconnect(name string, value interface{}) (err error) {
+	_, err = dev.synchronousWrite(packet{
+		Cmd: "set",
+		Args: map[string]string{
+			"name":       name,
+			"value":      fmt.Sprint(value),
+			"disconnect": fmt.Sprint(true),
+		},
+	})
+	return
+}
+
+func (dev *Device) reader() {
+	var line string
+	var err error
 
 	defer func() {
-		if recover() != nil {
-			err = errors.New("not connected")
+		dev.connected = false
+		dev.subscriptionsSetup = false
+		for _, sub := range dev.subscriptions {
+			sub.Close()
 		}
-		if err != nil {
-			d.connected = false
-		}
+		dev.Log.Println("[DEVICE] disconnected", err)
 	}()
 
-	d.execCh <- func() {
-		res, err = d.exec(cmd)
+	dev.conn, err = dev.dialer()
+	if err != nil {
+		return
+	}
+
+	reader := bufio.NewReader(dev.conn)
+	dev.connected = true
+	dev.Log.Println("[DEVICE] connected")
+
+	for {
+		line, err = reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "@") {
+			dev.inbound <- line
+		} else {
+			dev.Log.Println("[DEVICE] async:", line)
+			cmd, err := decode(line)
+			dev.Log.Println(cmd.Cmd)
+			if err == nil {
+				switch cmd.Cmd {
+				case "@attr":
+					dev.Log.Printf("fanout %+v", cmd)
+					dev.fanout(cmd.Args["name"], dev.subscriptions, Message{
+						Message: cmd.Args["name"],
+						Value:   cmd.Args["value"],
+					})
+				}
+			} else {
+				dev.Log.Println("err decoding aync packet:", line)
+			}
+		}
+	}
+}
+
+func (dev *Device) execHandler() {
+	for {
+		select {
+		case fn := <-dev.execCh:
+			fn()
+		case <-time.After(5 * time.Second):
+			_, _ = dev.write(packet{Cmd: "ping"})
+		}
+	}
+}
+
+func (dev *Device) exec(fn func()) {
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+	dev.execCh <- func() {
+		fn()
 		wg.Done()
 	}
 	wg.Wait()
-	return
 }
 
-func (d *Device) Subscribe(filter string) *Subscription {
-	sub := &Subscription{
-		device: d,
-		filter: filter,
-		ch:     make(chan Packet, 10),
-	}
-	d.execCh <- func() {
-		if !d.subscribed {
-			if _, err := d.exec(SubscribePacket{Filter: "*"}); err != nil {
-				fmt.Println(err)
-			}
-		}
-		d.subscriptions = append(d.subscriptions, sub)
-	}
-	return sub
-}
-
-func (d *Device) exec(cmd Packet) (res []Packet, err error) {
-	encoded := Encode(cmd)
-	d.Log.Println("<", encoded)
-	if _, err = fmt.Fprintln(d.conn, encoded); err != nil {
+func (dev *Device) write(cmd packet) (res []packet, err error) {
+	if !dev.connected {
+		err = ErrNotConnected
 		return
 	}
-	if d.FlushFn != nil {
-		if err = d.FlushFn(); err != nil {
-			return
-		}
-	}
+	_, err = fmt.Fprintln(dev.conn, encode(cmd))
 	for {
 		select {
-		case r, ok := <-d.readCh:
-			if !ok {
+
+		case line := <-dev.inbound:
+			var p packet
+			p, err = decode(line)
+			if err != nil {
 				return
 			}
-			if r == "ok" {
+			switch p.Cmd {
+			case "ok":
 				return
-			} else if strings.HasPrefix(r, "err") {
-				err = errors.New(r)
+			case "err":
+				err = errors.New(p.Args["msg"])
 				return
-			} else {
-				var c Packet
-				if c, err = Decode(r); err != nil {
-					return
-				}
-				res = append(res, c)
+			default:
+				res = append(res, p)
 			}
-		case <-time.After(2 * time.Second):
-			err = errors.New("timeout")
+		case <-time.After(1 * time.Second):
+			err = errors.New("timeout awaiting response")
+			dev.conn.Close()
 			return
 		}
 	}
 }
 
-func (d *Device) executor() {
-	go func() {
-		d.Log.Println("executor start")
-		var err error
-		defer func() {
-			d.Log.Println("executor stop", err)
-			d.connected = false
-		}()
-		for {
-			select {
-			case fn, ok := <-d.execCh:
-				if !ok {
-					return
-				}
-				if fn != nil {
-					fn()
-				}
-			case <-time.After(5 * time.Second):
-				if d.Connected() {
-					if _, err = d.exec(PingPacket{}); err != nil {
-						return
-					}
-				}
-			}
-		}
-	}()
-}
-
-func (d *Device) handleAsync(cmd rawPacket) (err error) {
-	switch cmd.Cmd() {
-	case "@attr":
-		var packet Packet
-		tipe := cmd.Get("type").(string)
-		switch tipe {
-		case "bool":
-			val, _ := strconv.ParseBool(cmd.Get("value").(string))
-			packet = BooleanAttributeUpdate{
-				Name:  cmd.Get("name").(string),
-				Value: val,
-			}
-		case "unsigned":
-			val, _ := strconv.ParseUint(cmd.Get("value").(string), 10, 64)
-			packet = UnsignedAttributeUpdate{
-				Name:  cmd.Get("name").(string),
-				Value: val,
-			}
-		case "int":
-			val, _ := strconv.ParseInt(cmd.Get("value").(string), 10, 64)
-			packet = IntegerAttributeUpdate{
-				Name:  cmd.Get("name").(string),
-				Value: val,
-			}
-		case "double":
-			val, _ := strconv.ParseFloat(cmd.Get("value").(string), 64)
-			packet = DoubleAttributeUpdate{
-				Name:  cmd.Get("name").(string),
-				Value: val,
-			}
-		case "string":
-			packet = StringAttributeUpdate{
-				Name:  cmd.Get("name").(string),
-				Value: cmd.Get("value").(string),
-			}
-		default:
-			d.Log.Println("unknown @attr type", tipe)
-		}
-		d.Log.Printf("fanout %+v", cmd)
-		d.fanout(cmd.Get("name").(string), d.subscriptions, packet)
-	default:
-		d.Log.Println("unhandled async command,", cmd.Cmd())
-	}
-	return
-}
-
-func (d *Device) fanout(key string, subs []*Subscription, transmuted Packet) {
-	slowSubscribers := make([]*Subscription, 0, len(d.subscriptions))
+func (dev *Device) fanout(key string, subs []*Subscription, transmuted Message) {
+	slowSubscribers := make([]*Subscription, 0, len(dev.subscriptions))
 	for _, sub := range subs {
 		if KeyMatch(key, sub.filter) {
 			select {
@@ -232,50 +276,25 @@ func (d *Device) fanout(key string, subs []*Subscription, transmuted Packet) {
 	}
 	for _, sub := range slowSubscribers {
 		sub.Close()
-		d.Log.Println("closing slow subscriber", sub)
+		dev.Log.Println("closing slow subscriber", sub)
 	}
 }
 
-func (d *Device) reader() {
-	scanner := bufio.NewScanner(d.conn)
-	go func() {
-		var cmd rawPacket
-		var err error
-		d.Log.Println("reader start")
-		defer func() {
-			d.Log.Println("reader stop", err)
-			d.disconnect()
-		}()
-		for scanner.Scan() {
-			msg := scanner.Text()
-			d.Log.Println(">", msg)
-			if strings.HasPrefix(msg, "@") {
-				if cmd, err = Decode(msg); err == nil {
-					if err = d.handleAsync(cmd); err != nil {
-						return
-					}
-				} else {
-					d.Log.Println("unable to decode async message", err)
-				}
-			} else {
-				d.readCh <- msg
+func (dev *Device) Subscribe(filter string) *Subscription {
+	sub := &Subscription{
+		device: dev,
+		filter: filter,
+		ch:     make(chan Message, 10),
+	}
+	dev.execCh <- func() {
+		if !dev.subscriptionsSetup {
+			dev.Log.Println("enable subscriptions")
+			dev.subscriptionsSetup = true
+			if _, err := dev.write(packet{Cmd: "sub", Args: map[string]string{"filter": "*"}}); err != nil {
+				dev.Log.Println(err)
 			}
 		}
-		if err := scanner.Err(); err != nil {
-			d.connected = false
-			close(d.execCh)
-		}
-		close(d.readCh)
-	}()
-}
-
-func (d *Device) disconnect() {
-	d.Log.Println("disconnect")
-	//for _, sub := range d.subscriptions {
-	//	close(sub.ch)
-	//}
-}
-
-func (d *Device) Id() string {
-	return d.info.Get("id").(string)
+		dev.subscriptions = append(dev.subscriptions, sub)
+	}
+	return sub
 }
