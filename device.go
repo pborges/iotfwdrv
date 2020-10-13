@@ -13,7 +13,6 @@ import (
 )
 
 var ErrNotConnected = errors.New("not connected")
-var ErrAlreadyStarted = errors.New("device already started")
 
 type Message struct {
 	Message string
@@ -57,10 +56,8 @@ func (dev *Device) SetMetadata(key, value string) {
 	})
 }
 
-func (dev *Device) Start(dialer func() (io.ReadWriteCloser, error)) error {
-	var setup bool
+func (dev *Device) Start(dialer func() (io.ReadWriteCloser, error)) {
 	dev.setup.Do(func() {
-		setup = true
 		if dev.Log == nil {
 			dev.Log = log.New(ioutil.Discard, "[iotfwdrv] ", log.LstdFlags)
 		}
@@ -76,10 +73,6 @@ func (dev *Device) Start(dialer func() (io.ReadWriteCloser, error)) error {
 			}
 		}()
 	})
-	if !setup && dev.dialer != nil {
-		return ErrAlreadyStarted
-	}
-	return nil
 }
 
 func (dev *Device) synchronousWrite(cmd packet) (res []packet, err error) {
@@ -170,7 +163,7 @@ func (dev *Device) reader() {
 		for _, sub := range dev.subscriptions {
 			sub.Close()
 		}
-		dev.Log.Println("[DEVICE] disconnected", err)
+		dev.Log.Println("disconnected", err)
 	}()
 
 	dev.conn, err = dev.dialer()
@@ -180,7 +173,7 @@ func (dev *Device) reader() {
 
 	reader := bufio.NewReader(dev.conn)
 	dev.connected = true
-	dev.Log.Println("[DEVICE] connected")
+	dev.Log.Println("connected")
 
 	for {
 		line, err = reader.ReadString('\n')
@@ -191,7 +184,7 @@ func (dev *Device) reader() {
 		if !strings.HasPrefix(line, "@") {
 			dev.inbound <- line
 		} else {
-			dev.Log.Println("[DEVICE] async:", line)
+			dev.Log.Println("async:", line)
 			cmd, err := decode(line)
 			dev.Log.Println(cmd.Cmd)
 			if err == nil {
