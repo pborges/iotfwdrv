@@ -2,4 +2,4 @@
 *.iml
 _garbagebin/
 logtosheet*.json
-cmd/
+cmd/log2sheet

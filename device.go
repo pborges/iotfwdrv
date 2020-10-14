@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -14,14 +15,22 @@ import (
 
 var ErrNotConnected = errors.New("not connected")
 
+func New(dialer func() (io.ReadWriteCloser, error)) *Device {
+	var dev Device
+
+	dev.execCh = make(chan func())
+	dev.inbound = make(chan string)
+
+	dev.dialer = dialer
+	dev.Log = log.New(ioutil.Discard, "[iotfwdrv] ", log.LstdFlags)
+
+	go dev.execHandler()
+	return &dev
+}
+
 type Message struct {
 	Message string
 	Value   string
-}
-
-type Metadata struct {
-	Key   string
-	Value string
 }
 
 type Info struct {
@@ -30,49 +39,110 @@ type Info struct {
 	Model       string
 	FirmwareVer Version
 	HardwareVer Version
-	Metadata    []Metadata
 }
 
 type Device struct {
-	dialer             func() (io.ReadWriteCloser, error)
-	execCh             chan func()
-	inbound            chan string
-	conn               io.ReadWriteCloser
-	connected          bool
-	setup              sync.Once
-	subscriptions      []*Subscription
-	subscriptionsSetup bool
-	metadata           map[string]string
-	Log                *log.Logger
+	dialer        func() (io.ReadWriteCloser, error)
+	execCh        chan func()
+	inbound       chan string
+	conn          io.ReadWriteCloser
+	connected     bool
+	setup         sync.Once
+	subscriptions []*Subscription
+	Log           *log.Logger
+	info          Info
 }
 
 func (dev *Device) Connected() bool {
 	return dev.connected
 }
 
-func (dev *Device) SetMetadata(key, value string) {
-	dev.exec(func() {
-		dev.metadata[key] = value
-	})
+func (dev *Device) Addr() string {
+	if dev.conn != nil {
+		if c, ok := dev.conn.(net.Conn); ok {
+			return c.RemoteAddr().String()
+		}
+	}
+	return ""
 }
 
-func (dev *Device) Start(dialer func() (io.ReadWriteCloser, error)) {
-	dev.setup.Do(func() {
-		if dev.Log == nil {
-			dev.Log = log.New(ioutil.Discard, "[iotfwdrv] ", log.LstdFlags)
+func (dev *Device) Disconnect() (err error) {
+	dev.exec(func() {
+		if dev.conn != nil {
+			dev.conn.Close()
 		}
-		dev.metadata = make(map[string]string)
-		dev.execCh = make(chan func())
-		dev.inbound = make(chan string)
-		dev.dialer = dialer
-
-		go dev.execHandler()
-		go func() {
-			for {
-				dev.reader()
-			}
-		}()
 	})
+	return err
+}
+
+func (dev *Device) Connect() (err error) {
+	dev.exec(func() {
+		if dev.connected {
+			return
+		}
+
+		dev.conn, err = dev.dialer()
+		if err != nil {
+			return
+		}
+		dev.reader()
+
+		// get the info packet
+		if err = dev.getInfo(); err != nil {
+			return
+		}
+		dev.Log.SetPrefix("[" + dev.info.ID + "] ")
+
+		// subscribe to all
+		if _, err = dev.write(packet{Cmd: "sub", Args: map[string]string{"filter": "*"}}); err != nil {
+			dev.Log.Println("subscriptions not supported")
+			err = nil
+		}
+		dev.Log.Println("connected")
+	})
+	return
+}
+
+func (dev *Device) getInfo() (err error) {
+	var res []packet
+	res, err = dev.write(packet{
+		Cmd: "info",
+	})
+	if err != nil {
+		return
+	} else if len(res) <= 0 {
+		err = errors.New("unexpected info response length")
+	} else {
+		dev.info.ID = res[0].Args["id"]
+		dev.info.Model = res[0].Args["model"]
+		dev.info.HardwareVer, err = parseVersion(res[0].Args["hw"])
+		if err != nil {
+			return
+		}
+		dev.info.FirmwareVer, err = parseVersion(res[0].Args["ver"])
+		if err != nil {
+			return
+		}
+	}
+
+	res, err = dev.write(packet{
+		Cmd: "list",
+	})
+	if err != nil {
+		return
+	} else if len(res) <= 0 {
+		err = errors.New("unexpected list response length")
+	} else {
+		for _, p := range res {
+			switch p.Cmd {
+			case "attr":
+				if p.Args["name"] == "config.name" {
+					dev.info.Name = p.Args["value"]
+				}
+			}
+		}
+	}
+	return
 }
 
 func (dev *Device) synchronousWrite(cmd packet) (res []packet, err error) {
@@ -80,6 +150,13 @@ func (dev *Device) synchronousWrite(cmd packet) (res []packet, err error) {
 		res, err = dev.write(cmd)
 	})
 	return
+}
+
+func (dev *Device) SetName(value string) (err error) {
+	if err := dev.Set("config.name", value); err == nil {
+		dev.info.Name = value
+	}
+	return err
 }
 
 func (dev *Device) Set(name string, value interface{}) (err error) {
@@ -111,34 +188,8 @@ func (dev *Device) Execute(name string, args map[string]interface{}) (debug []st
 	return
 }
 
-func (dev *Device) Info() (info Info, err error) {
-	dev.exec(func() {
-		var res []packet
-		res, err = dev.write(packet{
-			Cmd: "info",
-		})
-		if err != nil {
-			return
-		} else if len(res) <= 0 {
-			err = errors.New("unexpected info response length")
-		} else {
-			info.ID = res[0].Args["id"]
-			info.Name = res[0].Args["name"]
-			info.Model = res[0].Args["model"]
-			info.HardwareVer, err = parseVersion(res[0].Args["hw"])
-			if err != nil {
-				return
-			}
-			info.FirmwareVer, err = parseVersion(res[0].Args["ver"])
-			if err != nil {
-				return
-			}
-			for k, v := range dev.metadata {
-				info.Metadata = append(info.Metadata, Metadata{Key: k, Value: v})
-			}
-		}
-	})
-	return
+func (dev *Device) Info() Info {
+	return dev.info
 }
 
 func (dev *Device) SetOnDisconnect(name string, value interface{}) (err error) {
@@ -157,50 +208,44 @@ func (dev *Device) reader() {
 	var line string
 	var err error
 
-	defer func() {
-		dev.connected = false
-		dev.subscriptionsSetup = false
-		for _, sub := range dev.subscriptions {
-			sub.Close()
-		}
-		dev.Log.Println("disconnected", err)
-	}()
-
-	dev.conn, err = dev.dialer()
-	if err != nil {
-		return
-	}
-
 	reader := bufio.NewReader(dev.conn)
 	dev.connected = true
-	dev.Log.Println("connected")
+	go func() {
+		defer func() {
+			dev.connected = false
+			for _, sub := range dev.subscriptions {
+				sub.Close()
+			}
+			dev.Log.Println("disconnected", err)
+		}()
 
-	for {
-		line, err = reader.ReadString('\n')
-		if err != nil {
-			return
-		}
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "@") {
-			dev.inbound <- line
-		} else {
-			dev.Log.Println("async:", line)
-			cmd, err := decode(line)
-			dev.Log.Println(cmd.Cmd)
-			if err == nil {
-				switch cmd.Cmd {
-				case "@attr":
-					dev.Log.Printf("fanout %+v", cmd)
-					dev.fanout(cmd.Args["name"], dev.subscriptions, Message{
-						Message: cmd.Args["name"],
-						Value:   cmd.Args["value"],
-					})
-				}
+		for {
+			line, err = reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "@") {
+				dev.inbound <- line
 			} else {
-				dev.Log.Println("err decoding aync packet:", line)
+				dev.Log.Println("async:", line)
+				cmd, err := decode(line)
+				dev.Log.Println(cmd.Cmd)
+				if err == nil {
+					switch cmd.Cmd {
+					case "@attr":
+						dev.Log.Printf("fanout %+v", cmd)
+						dev.fanout(cmd.Args["name"], dev.subscriptions, Message{
+							Message: cmd.Args["name"],
+							Value:   cmd.Args["value"],
+						})
+					}
+				} else {
+					dev.Log.Println("err decoding aync packet:", line)
+				}
 			}
 		}
-	}
+	}()
 }
 
 func (dev *Device) execHandler() {
@@ -280,13 +325,6 @@ func (dev *Device) Subscribe(filter string) *Subscription {
 		ch:     make(chan Message, 10),
 	}
 	dev.execCh <- func() {
-		if !dev.subscriptionsSetup {
-			dev.Log.Println("enable subscriptions")
-			dev.subscriptionsSetup = true
-			if _, err := dev.write(packet{Cmd: "sub", Args: map[string]string{"filter": "*"}}); err != nil {
-				dev.Log.Println(err)
-			}
-		}
 		dev.subscriptions = append(dev.subscriptions, sub)
 	}
 	return sub
