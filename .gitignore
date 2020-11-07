@@ -3,3 +3,4 @@
 _garbagebin/
 logtosheet*.json
 cmd/log2sheet
+cmd/update/

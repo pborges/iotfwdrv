@@ -11,11 +11,21 @@ type Version struct {
 	Minor int `json:"minor"`
 }
 
+func (v Version) GreaterThan(ver Version) bool {
+	if v.Major > ver.Major {
+		return true
+	}
+	if v.Major == ver.Major && v.Minor > ver.Minor {
+		return true
+	}
+	return false
+}
+
 func (v Version) String() string {
 	return fmt.Sprintf("%d.%d", v.Major, v.Minor)
 }
 
-func parseVersion(v string) (Version, error) {
+func ParseVersion(v string) (Version, error) {
 	matches := regexp.MustCompile("([0-9]+)\\.([0-9]+)").FindStringSubmatch(v)
 	var ver Version
 	var err error

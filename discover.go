@@ -60,15 +60,10 @@ func LocalNetworks() ([]net.IP, error) {
 			log.Fatalln(err)
 		}
 		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
-				networks = append(networks, ip.Mask(ip.DefaultMask()))
+			if a, ok := addr.(*net.IPNet); ok &&
+				!a.IP.IsLoopback() &&
+				a.IP.To4() != nil {
+				networks = append(networks, a.IP.Mask(a.Mask))
 			}
 		}
 	}

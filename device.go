@@ -57,13 +57,13 @@ func (dev *Device) Connected() bool {
 	return dev.connected
 }
 
-func (dev *Device) Addr() string {
+func (dev *Device) Addr() *net.TCPAddr {
 	if dev.conn != nil {
-		if c, ok := dev.conn.(net.Conn); ok {
-			return c.RemoteAddr().String()
+		if c, ok := dev.conn.(*net.TCPConn); ok {
+			return c.RemoteAddr().(*net.TCPAddr)
 		}
 	}
-	return ""
+	return nil
 }
 
 func (dev *Device) Disconnect() (err error) {
@@ -115,11 +115,11 @@ func (dev *Device) getInfo() (err error) {
 	} else {
 		dev.info.ID = res[0].Args["id"]
 		dev.info.Model = res[0].Args["model"]
-		dev.info.HardwareVer, err = parseVersion(res[0].Args["hw"])
+		dev.info.HardwareVer, err = ParseVersion(res[0].Args["hw"])
 		if err != nil {
 			return
 		}
-		dev.info.FirmwareVer, err = parseVersion(res[0].Args["ver"])
+		dev.info.FirmwareVer, err = ParseVersion(res[0].Args["ver"])
 		if err != nil {
 			return
 		}
@@ -170,7 +170,7 @@ func (dev *Device) Set(name string, value interface{}) (err error) {
 	return
 }
 
-func (dev *Device) Execute(name string, args map[string]interface{}) (debug []string, err error) {
+func (dev *Device) Execute(name string, args map[string]interface{}) (output []string, err error) {
 	cmd := packet{
 		Cmd:  name,
 		Args: map[string]string{},
@@ -181,8 +181,8 @@ func (dev *Device) Execute(name string, args map[string]interface{}) (debug []st
 	var res []packet
 	res, err = dev.synchronousWrite(cmd)
 	for _, v := range res {
-		if v.Cmd == "debug" {
-			debug = append(debug, v.Args["msg"])
+		if v.Cmd == "output" {
+			output = append(output, v.Args["msg"])
 		}
 	}
 	return
@@ -230,7 +230,6 @@ func (dev *Device) reader() {
 			} else {
 				dev.Log.Println("async:", line)
 				cmd, err := decode(line)
-				dev.Log.Println(cmd.Cmd)
 				if err == nil {
 					switch cmd.Cmd {
 					case "@attr":

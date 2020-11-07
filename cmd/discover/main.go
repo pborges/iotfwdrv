@@ -21,7 +21,7 @@ func main() {
 	table.SetHeader([]string{"ID", "Name", "Model", "HW VER", "FW VER", "Addr"})
 
 	for _, dev := range devs {
-		table.Append([]string{dev.Info().ID, dev.Info().Name, dev.Info().Model, dev.Info().HardwareVer.String(), dev.Info().FirmwareVer.String(), dev.Addr()})
+		table.Append([]string{dev.Info().ID, dev.Info().Name, dev.Info().Model, dev.Info().HardwareVer.String(), dev.Info().FirmwareVer.String(), dev.Addr().String()})
 	}
 
 	table.Render()
