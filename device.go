@@ -43,16 +43,17 @@ type Info struct {
 }
 
 type Device struct {
+	Log           *log.Logger
+	VerboseLog    bool
+	connected     bool
 	dialer        func() (io.ReadWriteCloser, error)
 	execCh        chan func()
 	inbound       chan string
 	conn          io.ReadWriteCloser
-	connected     bool
 	setup         sync.Once
 	subscriptions []*Subscription
 	values        map[string]string
 	valuesLock    sync.Mutex
-	Log           *log.Logger
 	info          Info
 }
 
@@ -188,8 +189,10 @@ func (dev *Device) Execute(name string, args map[string]interface{}) (output []s
 		Cmd:  name,
 		Args: map[string]string{},
 	}
-	for k, v := range args {
-		cmd.Args[k] = fmt.Sprint(v)
+	if args != nil {
+		for k, v := range args {
+			cmd.Args[k] = fmt.Sprint(v)
+		}
 	}
 	var res []packet
 	res, err = dev.synchronousWrite(cmd)
@@ -241,7 +244,9 @@ func (dev *Device) reader() {
 			if !strings.HasPrefix(line, "@") {
 				dev.inbound <- line
 			} else {
-				dev.Log.Println("async:", line)
+				if dev.VerboseLog {
+					dev.Log.Println("async:", line)
+				}
 				cmd, err := decode(line)
 				if err == nil {
 					switch cmd.Cmd {
@@ -250,7 +255,9 @@ func (dev *Device) reader() {
 						dev.values[cmd.Args["name"]] = cmd.Args["value"]
 						dev.valuesLock.Unlock()
 
-						dev.Log.Printf("fanout %+v", cmd)
+						if dev.VerboseLog {
+							dev.Log.Printf("fanout %+v", cmd)
+						}
 						dev.fanout(cmd.Args["name"], dev.subscriptions, Message{
 							Message: cmd.Args["name"],
 							Value:   cmd.Args["value"],
