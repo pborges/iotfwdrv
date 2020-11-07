@@ -45,6 +45,7 @@ type Info struct {
 type Device struct {
 	Log           *log.Logger
 	VerboseLog    bool
+	info          Info
 	connected     bool
 	dialer        func() (io.ReadWriteCloser, error)
 	execCh        chan func()
@@ -54,7 +55,15 @@ type Device struct {
 	subscriptions []*Subscription
 	values        map[string]string
 	valuesLock    sync.Mutex
-	info          Info
+	waiting       []chan error
+}
+
+func (dev *Device) Wait() error {
+	c := make(chan error)
+	dev.exec(func() {
+		dev.waiting = append(dev.waiting, c)
+	})
+	return <-c
 }
 
 func (dev *Device) Connected() bool {
@@ -232,6 +241,11 @@ func (dev *Device) reader() {
 			for _, sub := range dev.subscriptions {
 				sub.Close()
 			}
+			for _, w := range dev.waiting {
+				w <- err
+				close(w)
+			}
+			dev.waiting = make([]chan error, 0)
 			dev.Log.Println("disconnected", err)
 		}()
 
