@@ -21,6 +21,7 @@ func New(dialer func() (io.ReadWriteCloser, error)) *Device {
 	dev.execCh = make(chan func())
 	dev.inbound = make(chan string)
 
+	dev.values = make(map[string]string)
 	dev.dialer = dialer
 	dev.Log = log.New(ioutil.Discard, "[iotfwdrv] ", log.LstdFlags)
 
@@ -49,6 +50,8 @@ type Device struct {
 	connected     bool
 	setup         sync.Once
 	subscriptions []*Subscription
+	values        map[string]string
+	valuesLock    sync.Mutex
 	Log           *log.Logger
 	info          Info
 }
@@ -139,6 +142,9 @@ func (dev *Device) getInfo() (err error) {
 				if p.Args["name"] == "config.name" {
 					dev.info.Name = p.Args["value"]
 				}
+				dev.valuesLock.Lock()
+				dev.values[p.Args["name"]] = p.Args["value"]
+				dev.valuesLock.Unlock()
 			}
 		}
 	}
@@ -167,6 +173,13 @@ func (dev *Device) Set(name string, value interface{}) (err error) {
 			"value": fmt.Sprint(value),
 		},
 	})
+	return
+}
+
+func (dev *Device) Get(attr string) (val string) {
+	dev.valuesLock.Lock()
+	defer dev.valuesLock.Unlock()
+	val = dev.values[attr]
 	return
 }
 
@@ -233,6 +246,10 @@ func (dev *Device) reader() {
 				if err == nil {
 					switch cmd.Cmd {
 					case "@attr":
+						dev.valuesLock.Lock()
+						dev.values[cmd.Args["name"]] = cmd.Args["value"]
+						dev.valuesLock.Unlock()
+
 						dev.Log.Printf("fanout %+v", cmd)
 						dev.fanout(cmd.Args["name"], dev.subscriptions, Message{
 							Message: cmd.Args["name"],
