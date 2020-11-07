@@ -58,12 +58,12 @@ type Device struct {
 	waiting       []chan error
 }
 
-func (dev *Device) Wait() error {
+func (dev *Device) Wait() <-chan error {
 	c := make(chan error)
 	dev.exec(func() {
 		dev.waiting = append(dev.waiting, c)
 	})
-	return <-c
+	return c
 }
 
 func (dev *Device) Connected() bool {
