@@ -199,7 +199,12 @@ func (dev *Device) Get(attr string) (val string) {
 	return
 }
 
-func (dev *Device) Execute(name string, args map[string]interface{}) (output []string, err error) {
+type Response struct {
+	Output []string
+	Debug  []string
+}
+
+func (dev *Device) Execute(name string, args map[string]interface{}) (res Response, err error) {
 	cmd := packet{
 		Cmd:  name,
 		Args: map[string]string{},
@@ -209,11 +214,13 @@ func (dev *Device) Execute(name string, args map[string]interface{}) (output []s
 			cmd.Args[k] = fmt.Sprint(v)
 		}
 	}
-	var res []packet
-	res, err = dev.synchronousWrite(cmd)
-	for _, v := range res {
+	var r []packet
+	r, err = dev.synchronousWrite(cmd)
+	for _, v := range r {
 		if v.Cmd == "output" {
-			output = append(output, v.Args["msg"])
+			res.Output = append(res.Output, v.Args["msg"])
+		} else if v.Cmd == "debug" {
+			res.Debug = append(res.Debug, v.Args["msg"])
 		}
 	}
 	return

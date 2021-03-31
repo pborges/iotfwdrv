@@ -11,14 +11,15 @@ import (
 
 func main() {
 	dev := iotfwdrv.New(func() (io.ReadWriteCloser, error) {
-		return net.DialTimeout("tcp", "192.168.1.202:5000", 2*time.Second)
+		return net.DialTimeout("tcp", "192.168.1.138:5000", 2*time.Second)
 	})
 	dev.Log.SetOutput(os.Stdout)
 
 	for {
 		if err := dev.Connect(); err == nil {
 			go subscriber(dev)
-			work(dev)
+			go work(dev)
+			dev.Wait()
 		} else {
 			log.Println("error connecting", err)
 		}
@@ -31,10 +32,12 @@ func work(dev *iotfwdrv.Device) {
 
 	log.Println("work connect")
 	defer log.Println("work disconnect")
+	dev.Set("led.0", true)
+	dev.SetOnDisconnect("led.0", false)
 
-	for ; err == nil; err = dev.Set("led.0", state) {
+	for ; err == nil; err = dev.Set("gpio.0", state) {
 		state = !state
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(1000 * time.Millisecond)
 	}
 }
 
