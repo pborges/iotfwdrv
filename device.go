@@ -108,6 +108,10 @@ func (dev *Device) Connect() (err error) {
 
 		// get the info packet
 		if err = dev.getInfo(); err != nil {
+			dev.connected = false
+			if dev.conn != nil {
+				dev.conn.Close()
+			}
 			return
 		}
 		dev.Log.SetPrefix("[" + dev.info.ID + "] ")

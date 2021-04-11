@@ -7,7 +7,6 @@ import (
 	"net"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -19,32 +18,55 @@ func probe(addr string) (dev *Device, err error) {
 	return
 }
 
-func Discover(networks ...net.IP) (devs []*Device) {
-	lock := new(sync.Mutex)
-	wg := new(sync.WaitGroup)
-	wg.Add(254 * len(networks))
+func Discover(networks ...net.IP) (devs []*Device, errs []error) {
+	type res struct {
+		*Device
+		error
+	}
 
+	addrCount := 254 * len(networks)
+
+	in := make(chan string, addrCount)
+	out := make(chan res)
+
+	// load teh queue
 	for _, network := range networks {
 		for i := 1; i < 255; i++ {
 			ip := network
 			ip[3] = byte(i)
 			addr := fmt.Sprintf("%s:5000", ip)
-			go func(addr string) {
-				defer wg.Done()
-				dev, err := probe(addr)
-				if err == nil {
-					lock.Lock()
-					devs = append(devs, dev)
-					lock.Unlock()
-				}
-			}(addr)
+			in <- addr
 		}
 	}
 
-	wg.Wait()
+	for i := 0; i < 100; i++ {
+		go func() {
+			for {
+				select {
+				case addr := <-in:
+					dev, err := probe(addr)
+					out <- res{Device: dev, error: fmt.Errorf("[%s] %w", addr, err)}
+				default:
+					return
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < addrCount; i++ {
+		res := <-out
+		if res.Device != nil && res.Device.Connected() {
+			devs = append(devs, res.Device)
+			_ = res.Device.Disconnect()
+		} else if res.error != nil {
+			errs = append(errs, res.error)
+		}
+	}
+
 	sort.Slice(devs, func(i, j int) bool {
 		return strings.Compare(devs[i].Info().ID, devs[j].Info().ID) < 0
 	})
+
 	return
 }
 

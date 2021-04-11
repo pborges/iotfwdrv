@@ -15,7 +15,7 @@ func main() {
 	}
 
 	fmt.Println("Attempting discovery on", networks)
-	devs := iotfwdrv.Discover(networks...)
+	devs, errs := iotfwdrv.Discover(networks...)
 
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader([]string{"ID", "Name", "Model", "HW VER", "FW VER", "Addr"})
@@ -25,4 +25,11 @@ func main() {
 	}
 
 	table.Render()
+
+	if len(os.Args) > 1 && os.Args[1] == "errors" {
+		// dump errors
+		for _, err := range errs {
+			fmt.Println(err)
+		}
+	}
 }
