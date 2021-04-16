@@ -34,12 +34,11 @@ func Discover(networks ...net.IP) (devs []*Device, errs []error) {
 		for i := 1; i < 255; i++ {
 			ip := network
 			ip[3] = byte(i)
-			addr := fmt.Sprintf("%s:5000", ip)
-			in <- addr
+			in <- fmt.Sprintf("%s:5000", ip)
 		}
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 64; i++ {
 		go func() {
 			for {
 				select {
