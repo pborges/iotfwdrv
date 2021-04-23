@@ -31,9 +31,9 @@ func Discover(networks ...net.IP) (devs []*Device, errs []error) {
 
 	// load teh queue
 	for _, network := range networks {
+		network = network.To4()
 		for i := 1; i < 255; i++ {
-			ip := network
-			ip[3] = byte(i)
+			ip := net.IPv4(network[0], network[1], network[2], byte(i))
 			in <- fmt.Sprintf("%s:5000", ip)
 		}
 	}
