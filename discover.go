@@ -18,15 +18,21 @@ func probe(addr string) (dev *Device, err error) {
 	return
 }
 
+type IPError struct {
+	net.IP
+	error
+}
+
 func Discover(networks ...net.IP) (devs []*Device, errs []error) {
 	type res struct {
+		IP net.IP
 		*Device
 		error
 	}
 
 	addrCount := 254 * len(networks)
 
-	in := make(chan string, addrCount)
+	in := make(chan net.IP, addrCount)
 	out := make(chan res)
 
 	// load teh queue
@@ -34,7 +40,7 @@ func Discover(networks ...net.IP) (devs []*Device, errs []error) {
 		network = network.To4()
 		for i := 1; i < 255; i++ {
 			ip := net.IPv4(network[0], network[1], network[2], byte(i))
-			in <- fmt.Sprintf("%s:5000", ip)
+			in <- ip
 		}
 	}
 
@@ -42,9 +48,10 @@ func Discover(networks ...net.IP) (devs []*Device, errs []error) {
 		go func() {
 			for {
 				select {
-				case addr := <-in:
+				case ip := <-in:
+					addr := fmt.Sprintf("%s:%d", ip.To4(), 5000)
 					dev, err := probe(addr)
-					out <- res{Device: dev, error: fmt.Errorf("[%s] %w", addr, err)}
+					out <- res{IP: ip, Device: dev, error: fmt.Errorf("[%s] %w", addr, err)}
 				default:
 					return
 				}
@@ -58,7 +65,7 @@ func Discover(networks ...net.IP) (devs []*Device, errs []error) {
 			devs = append(devs, res.Device)
 			_ = res.Device.Disconnect()
 		} else if res.error != nil {
-			errs = append(errs, res.error)
+			errs = append(errs, IPError{IP: res.IP, error: res.error})
 		}
 	}
 

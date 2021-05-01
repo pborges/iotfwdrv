@@ -141,8 +141,11 @@ func runDiscover(cmd *cobra.Command, args []string) {
 
 	if showErrors, err := cmd.Flags().GetBool("errors"); err == nil && showErrors {
 		// dump errors
+		sort.Slice(errs, func(i, j int) bool {
+			return errs[i].(iotfwdrv.IPError).IP.To4()[3] < errs[j].(iotfwdrv.IPError).IP.To4()[3]
+		})
 		for _, err := range errs {
-			fmt.Println(err)
+			fmt.Println(err.Error())
 		}
 	}
 }
