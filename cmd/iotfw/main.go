@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"sort"
+	"strings"
 	"time"
 )
 import "github.com/spf13/cobra"
@@ -126,6 +128,10 @@ func runDiscover(cmd *cobra.Command, args []string) {
 
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader([]string{"ID", "Name", "Model", "HW VER", "FW VER", "Addr"})
+
+	sort.Slice(devs, func(i, j int) bool {
+		return strings.Compare(devs[i].Info().Name, devs[j].Info().Name) < 0
+	})
 
 	for _, dev := range devs {
 		table.Append([]string{dev.Info().ID, dev.Info().Name, dev.Info().Model, dev.Info().HardwareVer.String(), dev.Info().FirmwareVer.String(), dev.Addr().String()})
