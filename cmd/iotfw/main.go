@@ -29,7 +29,7 @@ func main() {
 
 	var setCmd = &cobra.Command{
 		Use:   "set [attr] [value]",
-		Short: "Set an attribute value on a remote device",
+		Short: "Sets an attributes value on a remote device",
 		Run:   runSet,
 		Args:  cobra.ExactArgs(2),
 	}
@@ -39,7 +39,7 @@ func main() {
 
 	var getCmd = &cobra.Command{
 		Use:   "get [attr]",
-		Short: "Gets an attribute value on a remote device",
+		Short: "Gets an attribute value from a remote device",
 		Run:   runGet,
 		Args:  cobra.ExactArgs(1),
 	}
