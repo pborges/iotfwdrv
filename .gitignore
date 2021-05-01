@@ -4,4 +4,7 @@ _garbagebin/
 logtosheet*.json
 cmd/log2sheet
 cmd/update/
+cmd/discover/
+cmd/reverse/
 vendor/
+.DS_Store

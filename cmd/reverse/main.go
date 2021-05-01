@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// this is to help reverse engineer future devices
 func main() {
 	dev := iotfwdrv.New(func() (io.ReadWriteCloser, error) {
 		return net.DialTimeout("tcp", "192.168.1.244:5000", 2*time.Second)
