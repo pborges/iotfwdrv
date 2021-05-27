@@ -2,6 +2,10 @@ package iotfwdrv
 
 import "strings"
 
+const KeyEvent = "@event"
+const KeyEventConnect = "connect"
+const KeyEventDisconnect = "disconnect"
+
 func KeyMatch(attr string, filter string) bool {
 	segAttr := strings.Split(attr, ".")
 	segFilter := strings.Split(filter, ".")

@@ -23,7 +23,13 @@ type IPError struct {
 	error
 }
 
-func Discover(networks ...net.IP) (devs []*Device, errs []error) {
+type IPErrors []IPError
+
+func (e IPErrors) Error() string {
+	return fmt.Sprintf("%d endpoints returned an error", len(e))
+}
+
+func Discover(networks ...net.IP) (devs []*Device, err error) {
 	type res struct {
 		IP net.IP
 		*Device
@@ -58,16 +64,17 @@ func Discover(networks ...net.IP) (devs []*Device, errs []error) {
 			}
 		}()
 	}
-
+	var devErr IPErrors
 	for i := 0; i < addrCount; i++ {
 		res := <-out
 		if res.Device != nil && res.Device.Connected() {
 			devs = append(devs, res.Device)
 			_ = res.Device.Disconnect()
 		} else if res.error != nil {
-			errs = append(errs, IPError{IP: res.IP, error: res.error})
+			devErr = append(devErr, IPError{IP: res.IP, error: res.error})
 		}
 	}
+	err = devErr
 
 	sort.Slice(devs, func(i, j int) bool {
 		return strings.Compare(devs[i].Info().ID, devs[j].Info().ID) < 0
@@ -77,7 +84,7 @@ func Discover(networks ...net.IP) (devs []*Device, errs []error) {
 }
 
 func LocalNetworks() ([]net.IP, error) {
-	networks := make([]net.IP, 0)
+	networksMap := make(map[string]net.IP)
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
@@ -91,9 +98,15 @@ func LocalNetworks() ([]net.IP, error) {
 			if a, ok := addr.(*net.IPNet); ok &&
 				!a.IP.IsLoopback() &&
 				a.IP.To4() != nil {
-				networks = append(networks, a.IP.Mask(a.Mask))
+				networksMap[a.IP.Mask(a.Mask).String()] = a.IP.Mask(a.Mask)
 			}
 		}
 	}
+
+	networks := make([]net.IP, 0, len(networksMap))
+	for _, n := range networksMap {
+		networks = append(networks, n)
+	}
+
 	return networks, nil
 }

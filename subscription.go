@@ -4,6 +4,7 @@ type Subscription struct {
 	ch     chan Message
 	device *Device
 	filter string
+	execCh chan func()
 }
 
 func (s Subscription) String() string {
@@ -15,7 +16,7 @@ func (s *Subscription) Chan() <-chan Message {
 }
 
 func (s *Subscription) Close() {
-	s.device.execCh <- func() {
+	s.execCh <- func() {
 		for i, sub := range s.device.subscriptions {
 			if s == sub {
 				close(s.ch)

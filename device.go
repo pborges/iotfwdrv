@@ -30,8 +30,9 @@ func New(dialer func() (io.ReadWriteCloser, error)) *Device {
 }
 
 type Message struct {
-	Message string
-	Value   string
+	Device Info
+	Key    string
+	Value  string
 }
 
 type Info struct {
@@ -114,7 +115,7 @@ func (dev *Device) Connect() (err error) {
 			}
 			return
 		}
-		dev.Log.SetPrefix("[" + dev.info.ID + "] ")
+		dev.Log.SetPrefix("[" + dev.Info().ID + ":" + dev.Info().Name + "] ")
 
 		// subscribe to all
 		if _, err = dev.write(packet{Cmd: "sub", Args: map[string]string{"filter": "*"}}); err != nil {
@@ -284,15 +285,17 @@ func (dev *Device) reader() {
 					case "@attr":
 						dev.valuesLock.Lock()
 						dev.values[cmd.Args["name"]] = cmd.Args["value"]
+						if cmd.Args["name"] == "config.name" {
+							info := dev.info
+							info.Name = cmd.Args["value"]
+							dev.info = info
+						}
 						dev.valuesLock.Unlock()
 
 						if dev.VerboseLog {
 							dev.Log.Printf("fanout %+v", cmd)
 						}
-						dev.fanout(cmd.Args["name"], dev.subscriptions, Message{
-							Message: cmd.Args["name"],
-							Value:   cmd.Args["value"],
-						})
+						dev.fanout(cmd.Args["name"], cmd.Args["value"])
 					}
 				} else {
 					dev.Log.Println("err decoding aync packet:", line)
@@ -355,12 +358,16 @@ func (dev *Device) write(cmd packet) (res []packet, err error) {
 	}
 }
 
-func (dev *Device) fanout(key string, subs []*Subscription, transmuted Message) {
+func (dev *Device) fanout(key string, value string) {
 	slowSubscribers := make([]*Subscription, 0, len(dev.subscriptions))
-	for _, sub := range subs {
+	for _, sub := range dev.subscriptions {
 		if KeyMatch(key, sub.filter) {
 			select {
-			case sub.ch <- transmuted:
+			case sub.ch <- Message{
+				Device: dev.info,
+				Key:    key,
+				Value:  value,
+			}:
 			default:
 				slowSubscribers = append(slowSubscribers, sub)
 			}
@@ -377,6 +384,7 @@ func (dev *Device) Subscribe(filter string) *Subscription {
 		device: dev,
 		filter: filter,
 		ch:     make(chan Message, 10),
+		execCh: dev.execCh,
 	}
 	dev.execCh <- func() {
 		dev.subscriptions = append(dev.subscriptions, sub)
