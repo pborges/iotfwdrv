@@ -57,6 +57,7 @@ type Device struct {
 	values        map[string]string
 	valuesLock    sync.Mutex
 	waiting       []chan error
+	lastRead      time.Time
 }
 
 func (dev *Device) Wait() error {
@@ -89,7 +90,9 @@ func (dev *Device) Addr() *net.TCPAddr {
 func (dev *Device) Disconnect() (err error) {
 	dev.exec(func() {
 		if dev.conn != nil {
-			dev.conn.Close()
+			dev.Log.Println("disconnect called manually")
+			err = dev.conn.Close()
+			err = fmt.Errorf("manual disconnect err: %w", err)
 		}
 	})
 	return err
@@ -270,15 +273,18 @@ func (dev *Device) reader() {
 		for {
 			line, err = reader.ReadString('\n')
 			if err != nil {
+				err = fmt.Errorf("unable to read %w", err)
 				return
+			}
+			dev.lastRead = time.Now()
+			line = strings.TrimSpace(line)
+			if dev.VerboseLog {
+				dev.Log.Println("read:", line)
 			}
 			line = strings.TrimSpace(line)
 			if !strings.HasPrefix(line, "@") {
 				dev.inbound <- line
 			} else {
-				if dev.VerboseLog {
-					dev.Log.Println("async:", line)
-				}
 				cmd, err := decode(line)
 				if err == nil {
 					switch cmd.Cmd {
@@ -292,9 +298,6 @@ func (dev *Device) reader() {
 						}
 						dev.valuesLock.Unlock()
 
-						if dev.VerboseLog {
-							dev.Log.Printf("fanout %+v", cmd)
-						}
 						dev.fanout(cmd.Args["name"], cmd.Args["value"])
 					}
 				} else {
@@ -310,8 +313,10 @@ func (dev *Device) execHandler() {
 		select {
 		case fn := <-dev.execCh:
 			fn()
-		case <-time.After(5 * time.Second):
-			_, _ = dev.write(packet{Cmd: "ping"})
+		case <-time.After(1 * time.Second):
+			if time.Since(dev.lastRead) > 10*time.Second {
+				_, _ = dev.write(packet{Cmd: "ping"})
+			}
 		}
 	}
 }
@@ -331,10 +336,17 @@ func (dev *Device) write(cmd packet) (res []packet, err error) {
 		err = ErrNotConnected
 		return
 	}
-	_, err = fmt.Fprintln(dev.conn, encode(cmd))
+	encoded := encode(cmd)
+	if dev.VerboseLog {
+		dev.Log.Println("write:", encoded)
+	}
+	_, err = fmt.Fprintln(dev.conn, encoded)
+	if err != nil {
+		err = fmt.Errorf("unable to write data %w", err)
+		return
+	}
 	for {
 		select {
-
 		case line := <-dev.inbound:
 			var p packet
 			p, err = decode(line)
@@ -345,12 +357,12 @@ func (dev *Device) write(cmd packet) (res []packet, err error) {
 			case "ok":
 				return
 			case "err":
-				err = errors.New(p.Args["msg"])
+				err = fmt.Errorf("error from device %s", p.Args["msg"])
 				return
 			default:
 				res = append(res, p)
 			}
-		case <-time.After(1 * time.Second):
+		case <-time.After(2 * time.Second):
 			err = errors.New("timeout awaiting response")
 			dev.conn.Close()
 			return

@@ -14,7 +14,7 @@ func main() {
 	svc := iotfwdrv.Service{
 		Log: Logger,
 		OnConnect: func(ctx iotfwdrv.DeviceContext) {
-			//ctx.Log = Logger
+			ctx.Log = Logger
 			//ctx.VerboseLog = true
 
 			if ctx.Get("led.0") != "" {
