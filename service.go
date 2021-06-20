@@ -18,6 +18,26 @@ type DeviceContext struct {
 	reconnect   bool
 }
 
+type ServicePlugin interface {
+	ServiceName() string
+}
+
+type ServicePluginOnRegister interface {
+	OnRegister(ctx DeviceContext)
+}
+
+type ServicePluginOnUnregister interface {
+	OnUnregister(ctx DeviceContext)
+}
+
+type ServicePluginOnConnect interface {
+	OnConnect(ctx DeviceContext)
+}
+
+type ServicePluginOnDisconnect interface {
+	OnDisconnect(ctx DeviceContext)
+}
+
 type Service struct {
 	Networks      []net.IP
 	Log           *log.Logger
@@ -25,6 +45,7 @@ type Service struct {
 	OnUnregister  func(ctx DeviceContext)
 	OnConnect     func(ctx DeviceContext)
 	OnDisconnect  func(ctx DeviceContext)
+	Plugins       []ServicePlugin
 	devices       map[string]*DeviceContext
 	fnCh          chan func()
 	subscriptions []*Subscription
@@ -131,8 +152,15 @@ func (s *Service) Discover() (err error) {
 					ctx.reconnect = false
 					ctx.Disconnect()
 					delete(s.devices, dev.Info().ID)
+
 					if s.OnUnregister != nil {
 						s.OnDisconnect(*ctx)
+					}
+					for _, p := range s.Plugins {
+						if fn, ok := p.(ServicePluginOnUnregister); ok {
+							s.logf("executing plugin OnUnregister for", p.ServiceName())
+							fn.OnUnregister(*ctx)
+						}
 					}
 				}
 			}
@@ -146,6 +174,12 @@ func (s *Service) Discover() (err error) {
 				s.devices[dev.Info().ID] = ctx
 				if s.OnRegister != nil {
 					s.OnRegister(*ctx)
+				}
+				for _, p := range s.Plugins {
+					if fn, ok := p.(ServicePluginOnRegister); ok {
+						s.logf("executing plugin OnRegister for", p.ServiceName())
+						fn.OnRegister(*ctx)
+					}
 				}
 				go func(ctx *DeviceContext) {
 					for ctx.reconnect {
@@ -165,12 +199,24 @@ func (s *Service) Discover() (err error) {
 							if s.OnConnect != nil {
 								s.OnConnect(*ctx)
 							}
+							for _, p := range s.Plugins {
+								if fn, ok := p.(ServicePluginOnConnect); ok {
+									s.logf("executing plugin OnConnect for", p.ServiceName())
+									fn.OnConnect(*ctx)
+								}
+							}
 							waitErr := ctx.Wait()
 							s.logf("[%s:%s] disconnect uptime: %s err: %+v", ctx.Info().ID, ctx.Info().Name, time.Since(ctx.ConnectedAt), waitErr)
 							s.fanout(ctx.Device.Info(), KeyEvent, KeyEventDisconnect)
 
 							if s.OnDisconnect != nil {
 								s.OnDisconnect(*ctx)
+							}
+							for _, p := range s.Plugins {
+								if fn, ok := p.(ServicePluginOnDisconnect); ok {
+									s.logf("executing plugin OnDisconnect for", p.ServiceName())
+									fn.OnDisconnect(*ctx)
+								}
 							}
 						} else {
 							s.logf("[%s:%s] connect err: %+v", ctx.Info().ID, ctx.Info().Name, connectErr)
