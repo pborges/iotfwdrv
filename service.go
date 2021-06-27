@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const maxDatagramSize = 256
+
 type DeviceContext struct {
 	*Device
 	ConnectedAt time.Time
@@ -51,6 +53,14 @@ type Service struct {
 	subscriptions []*Subscription
 }
 
+func (s *Service) multicastAddr() *net.UDPAddr {
+	multicastAddr, err := net.ResolveUDPAddr("udp", "226.1.13.37:5000")
+	if err != nil {
+		panic(err)
+	}
+	return multicastAddr
+}
+
 func (s *Service) exec(fn func()) {
 	if s.fnCh == nil {
 		s.fnCh = make(chan func())
@@ -59,6 +69,7 @@ func (s *Service) exec(fn func()) {
 				fn()
 			}
 		}()
+		s.exec(s.init)
 	}
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
@@ -69,10 +80,54 @@ func (s *Service) exec(fn func()) {
 	wg.Wait()
 }
 
+func (s *Service) init() {
+	if s.devices == nil {
+		s.devices = make(map[string]*DeviceContext)
+	}
+	s.setupMulticastDiscovery()
+}
+
 func (s *Service) logf(format string, a ...interface{}) {
 	if s.Log != nil {
 		s.Log.Printf(format, a...)
 	}
+}
+
+func (s *Service) setupMulticastDiscovery() {
+	s.logf("setup multicast discovery")
+	go func() {
+		conn, err := net.ListenMulticastUDP("udp", nil, s.multicastAddr())
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		conn.SetReadBuffer(maxDatagramSize)
+		for {
+			b := make([]byte, maxDatagramSize)
+			n, src, err := conn.ReadFromUDP(b)
+			if err != nil {
+				s.logf("ReadFromUDP failed: %s", err.Error())
+				continue
+			}
+			res := string(b[:n])
+			if strings.HasPrefix(res, "iotfw found ") {
+				id := strings.TrimPrefix(res, "iotfw found ")
+
+				s.logf("multicast %s", res)
+				if _, ok := s.devices[id]; !ok {
+					s.logf("NEW multicast %s", res)
+					dev := New(func() (io.ReadWriteCloser, error) {
+						return net.DialTimeout("tcp", src.String(), 4*time.Second)
+					})
+					if err := dev.Connect(); err == nil {
+						s.discovered(dev)
+					} else {
+						s.logf("unable to connect to discovered device %s", err.Error())
+					}
+				}
+			}
+		}
+	}()
 }
 
 func (s *Service) fanout(info Info, key string, value string) {
@@ -116,12 +171,99 @@ func (s *Service) Devices() []*Device {
 	return devs
 }
 
-func (s *Service) Discover() (err error) {
-	s.exec(func() {
-		if s.devices == nil {
-			s.devices = make(map[string]*DeviceContext)
-		}
+func (s *Service) discovered(dev *Device) {
+	// did the IP change or something?
+	if ctx, ok := s.devices[dev.Info().ID]; ok {
+		if !ctx.Connected() || dev.Addr().String() != ctx.Addr().String() {
+			s.logf("[%s:%s] unregistering device connected: %t existingIP: %s newIp: %s",
+				ctx.Info().ID,
+				ctx.Info().Name,
+				ctx.Connected(),
+				ctx.Addr().String(),
+				dev.Addr().String(),
+			)
+			ctx.reconnect = false
+			ctx.Disconnect()
+			delete(s.devices, dev.Info().ID)
 
+			if s.OnUnregister != nil {
+				s.OnUnregister(*ctx)
+			}
+			for _, p := range s.Plugins {
+				if fn, ok := p.(ServicePluginOnUnregister); ok {
+					s.logf("executing plugin OnUnregister for %s", p.ServiceName())
+					fn.OnUnregister(*ctx)
+				}
+			}
+		}
+	}
+
+	if _, ok := s.devices[dev.Info().ID]; !ok {
+		s.logf("[%s:%s] discovered device", dev.Info().ID, dev.Info().Name)
+		ctx := &DeviceContext{
+			Device:    dev,
+			reconnect: true,
+		}
+		s.logf("[%s:%s] registering device", ctx.Info().ID, ctx.Info().Name)
+		s.devices[dev.Info().ID] = ctx
+		if s.OnRegister != nil {
+			s.OnRegister(*ctx)
+		}
+		for _, p := range s.Plugins {
+			if fn, ok := p.(ServicePluginOnRegister); ok {
+				s.logf("executing plugin OnRegister for %s", p.ServiceName())
+				fn.OnRegister(*ctx)
+			}
+		}
+		go func(ctx *DeviceContext) {
+			for ctx.reconnect {
+				connectErr := ctx.Connect()
+				if connectErr == nil {
+					s.logf("[%s:%s] connected", ctx.Info().ID, ctx.Info().Name)
+					ctx.ConnectedAt = time.Now()
+					s.fanout(ctx.Device.Info(), KeyEvent, KeyEventConnect)
+
+					// subscribe to everything and fanout
+					go func(ctx *DeviceContext) {
+						for m := range ctx.Subscribe(">").Chan() {
+							s.fanout(ctx.Device.Info(), m.Key, m.Value)
+						}
+					}(ctx)
+
+					if s.OnConnect != nil {
+						s.OnConnect(*ctx)
+					}
+					for _, p := range s.Plugins {
+						if fn, ok := p.(ServicePluginOnConnect); ok {
+							s.logf("executing plugin OnConnect for %s", p.ServiceName())
+							fn.OnConnect(*ctx)
+						}
+					}
+					waitErr := ctx.Wait()
+					s.logf("[%s:%s] disconnect uptime: %s err: %+v", ctx.Info().ID, ctx.Info().Name, time.Since(ctx.ConnectedAt), waitErr)
+					s.fanout(ctx.Device.Info(), KeyEvent, KeyEventDisconnect)
+
+					if s.OnDisconnect != nil {
+						s.OnDisconnect(*ctx)
+					}
+					for _, p := range s.Plugins {
+						if fn, ok := p.(ServicePluginOnDisconnect); ok {
+							s.logf("executing plugin OnDisconnect for %s", p.ServiceName())
+							fn.OnDisconnect(*ctx)
+						}
+					}
+				} else {
+					s.logf("[%s:%s] connect err: %+v", ctx.Info().ID, ctx.Info().Name, connectErr)
+					time.Sleep(5 * time.Second)
+				}
+			}
+			s.logf("[%s:%s] disabling reconnect err:%+v", ctx.Info().ID, ctx.Info().Name, ctx.Wait())
+		}(ctx)
+	}
+}
+
+func (s *Service) LegacyDiscover() (err error) {
+	s.exec(func() {
 		if s.Networks == nil {
 			s.Networks, err = LocalNetworks()
 			if err != nil {
@@ -137,95 +279,7 @@ func (s *Service) Discover() (err error) {
 		discovered, _ := Discover(s.Networks...)
 
 		for _, dev := range discovered {
-			s.logf("[%s:%s] discovered device", dev.Info().ID, dev.Info().Name)
-
-			// did the IP change or something?
-			if ctx, ok := s.devices[dev.Info().ID]; ok {
-				if !ctx.Connected() || dev.Addr().String() != ctx.Addr().String() {
-					s.logf("[%s:%s] unregistering device connected: %t existingIP: %s newIp: %s",
-						ctx.Info().ID,
-						ctx.Info().Name,
-						ctx.Connected(),
-						ctx.Addr().String(),
-						dev.Addr().String(),
-					)
-					ctx.reconnect = false
-					ctx.Disconnect()
-					delete(s.devices, dev.Info().ID)
-
-					if s.OnUnregister != nil {
-						s.OnDisconnect(*ctx)
-					}
-					for _, p := range s.Plugins {
-						if fn, ok := p.(ServicePluginOnUnregister); ok {
-							s.logf("executing plugin OnUnregister for", p.ServiceName())
-							fn.OnUnregister(*ctx)
-						}
-					}
-				}
-			}
-
-			if _, ok := s.devices[dev.Info().ID]; !ok {
-				ctx := &DeviceContext{
-					Device:    dev,
-					reconnect: true,
-				}
-				s.logf("[%s:%s] registering device", ctx.Info().ID, ctx.Info().Name)
-				s.devices[dev.Info().ID] = ctx
-				if s.OnRegister != nil {
-					s.OnRegister(*ctx)
-				}
-				for _, p := range s.Plugins {
-					if fn, ok := p.(ServicePluginOnRegister); ok {
-						s.logf("executing plugin OnRegister for", p.ServiceName())
-						fn.OnRegister(*ctx)
-					}
-				}
-				go func(ctx *DeviceContext) {
-					for ctx.reconnect {
-						connectErr := ctx.Connect()
-						if connectErr == nil {
-							s.logf("[%s:%s] connected", ctx.Info().ID, ctx.Info().Name)
-							ctx.ConnectedAt = time.Now()
-							s.fanout(ctx.Device.Info(), KeyEvent, KeyEventConnect)
-
-							// subscribe to everything and fanout
-							go func(ctx *DeviceContext) {
-								for m := range ctx.Subscribe(">").Chan() {
-									s.fanout(ctx.Device.Info(), m.Key, m.Value)
-								}
-							}(ctx)
-
-							if s.OnConnect != nil {
-								s.OnConnect(*ctx)
-							}
-							for _, p := range s.Plugins {
-								if fn, ok := p.(ServicePluginOnConnect); ok {
-									s.logf("executing plugin OnConnect for", p.ServiceName())
-									fn.OnConnect(*ctx)
-								}
-							}
-							waitErr := ctx.Wait()
-							s.logf("[%s:%s] disconnect uptime: %s err: %+v", ctx.Info().ID, ctx.Info().Name, time.Since(ctx.ConnectedAt), waitErr)
-							s.fanout(ctx.Device.Info(), KeyEvent, KeyEventDisconnect)
-
-							if s.OnDisconnect != nil {
-								s.OnDisconnect(*ctx)
-							}
-							for _, p := range s.Plugins {
-								if fn, ok := p.(ServicePluginOnDisconnect); ok {
-									s.logf("executing plugin OnDisconnect for", p.ServiceName())
-									fn.OnDisconnect(*ctx)
-								}
-							}
-						} else {
-							s.logf("[%s:%s] connect err: %+v", ctx.Info().ID, ctx.Info().Name, connectErr)
-							time.Sleep(5 * time.Second)
-						}
-					}
-					s.logf("[%s:%s] disabling reconnect err:%+v", ctx.Info().ID, ctx.Info().Name, ctx.Wait())
-				}(ctx)
-			}
+			s.discovered(dev)
 		}
 	})
 	return

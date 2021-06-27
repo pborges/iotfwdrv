@@ -258,16 +258,21 @@ func (dev *Device) reader() {
 	dev.connected = true
 	go func() {
 		defer func() {
-			dev.connected = false
-			for _, sub := range dev.subscriptions {
-				sub.Close()
+			dev.execCh <- func() {
+				dev.connected = false
+				// close all subscriptions
+				for _, sub := range dev.subscriptions {
+					// dont call sub.Close() while iterating
+					close(sub.ch)
+				}
+				dev.subscriptions = make([]*Subscription, 0)
+				for _, w := range dev.waiting {
+					w <- err
+					close(w)
+				}
+				dev.waiting = make([]chan error, 0)
+				dev.Log.Println("disconnected", err)
 			}
-			for _, w := range dev.waiting {
-				w <- err
-				close(w)
-			}
-			dev.waiting = make([]chan error, 0)
-			dev.Log.Println("disconnected", err)
 		}()
 
 		for {
