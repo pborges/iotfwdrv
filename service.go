@@ -113,9 +113,8 @@ func (s *Service) setupMulticastDiscovery() {
 			if strings.HasPrefix(res, "iotfw found ") {
 				id := strings.TrimPrefix(res, "iotfw found ")
 
-				s.logf("multicast %s", res)
 				if _, ok := s.devices[id]; !ok {
-					s.logf("NEW multicast %s", res)
+					s.logf("found via multicast %s", res)
 					dev := New(func() (io.ReadWriteCloser, error) {
 						return net.DialTimeout("tcp", src.String(), 4*time.Second)
 					})
