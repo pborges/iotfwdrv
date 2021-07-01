@@ -190,7 +190,7 @@ func (s *Service) discovered(dev *Device) {
 			}
 			for _, p := range s.Plugins {
 				if fn, ok := p.(ServicePluginOnUnregister); ok {
-					s.logf("executing plugin OnUnregister for %s", p.ServiceName())
+					s.logf("executing %s->OnUnregister for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
 					fn.OnUnregister(*ctx)
 				}
 			}
@@ -210,7 +210,7 @@ func (s *Service) discovered(dev *Device) {
 		}
 		for _, p := range s.Plugins {
 			if fn, ok := p.(ServicePluginOnRegister); ok {
-				s.logf("executing plugin OnRegister for %s", p.ServiceName())
+				s.logf("executing %s->OnRegister for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
 				fn.OnRegister(*ctx)
 			}
 		}
@@ -234,7 +234,7 @@ func (s *Service) discovered(dev *Device) {
 					}
 					for _, p := range s.Plugins {
 						if fn, ok := p.(ServicePluginOnConnect); ok {
-							s.logf("executing plugin OnConnect for %s", p.ServiceName())
+							s.logf("executing %s->OnConnect for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
 							fn.OnConnect(*ctx)
 						}
 					}
@@ -247,7 +247,7 @@ func (s *Service) discovered(dev *Device) {
 					}
 					for _, p := range s.Plugins {
 						if fn, ok := p.(ServicePluginOnDisconnect); ok {
-							s.logf("executing plugin OnDisconnect for %s", p.ServiceName())
+							s.logf("executing %s->OnDisconnect for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
 							fn.OnDisconnect(*ctx)
 						}
 					}
@@ -261,7 +261,7 @@ func (s *Service) discovered(dev *Device) {
 	}
 }
 
-func (s *Service) LegacyDiscover() (err error) {
+func (s *Service) Discover() (err error) {
 	s.exec(func() {
 		if s.Networks == nil {
 			s.Networks, err = LocalNetworks()
