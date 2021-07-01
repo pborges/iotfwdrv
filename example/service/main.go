@@ -42,7 +42,7 @@ func main() {
 	for {
 		bufio.NewReader(os.Stdin).ReadLine()
 		fnCh <- func() {
-			Logger.Printf("discover complete err:%+v\n", svc.LegacyDiscover())
+			Logger.Printf("discover complete err:%+v\n", svc.Discover())
 		}
 	}
 }
