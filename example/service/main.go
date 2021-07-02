@@ -33,8 +33,8 @@ func main() {
 		}
 	}()
 
-	svc.OnRegister = func(ctx iotfwdrv.DeviceContext) {
-		svc.RenderDevicesTable(os.Stdout)
+	svc.OnDiscover = func(ctx iotfwdrv.DeviceMetadata) {
+		fmt.Printf("Discovered %+v\n", ctx)
 	}
 
 	fnCh := make(chan func())
@@ -42,7 +42,7 @@ func main() {
 	for {
 		bufio.NewReader(os.Stdin).ReadLine()
 		fnCh <- func() {
-			Logger.Printf("discover complete err:%+v\n", svc.Discover())
+			svc.RenderDevicesTable(os.Stdout)
 		}
 	}
 }
