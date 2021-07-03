@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/olekukonko/tablewriter"
 	"github.com/pborges/iotfwdrv"
@@ -204,9 +205,9 @@ func runDiscover(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	fmt.Println(iotfwdrv.HandleMDNS(func(m iotfwdrv.MetadataAndAddr) {
+	iotfwdrv.HandleMDNS(context.Background(), func(m iotfwdrv.MetadataAndAddr) {
 		devCh <- m
-	}))
+	})
 }
 
 func renderMetadataTable(devs ...iotfwdrv.MetadataAndAddr) {

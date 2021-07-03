@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const MdnsService = "_iotfw._tcp.local."
-
 type Metadata struct {
 	ID          string
 	Name        string
@@ -85,7 +83,7 @@ func (s *Service) exec(fn func()) {
 func (s *Service) HandleMDNS() {
 	s.logf("setup mdns discovery")
 
-	HandleMDNS(s.Register)
+	HandleMDNS(context.Background(), s.Register)
 }
 
 func (s *Service) logf(format string, a ...interface{}) {

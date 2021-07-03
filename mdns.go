@@ -2,45 +2,51 @@ package iotfwdrv
 
 import (
 	"context"
-	"fmt"
-	"github.com/brutella/dnssd"
+	"github.com/grandcat/zeroconf"
+	"log"
+	"strings"
 )
 
-func HandleMDNS(onDiscover func(m MetadataAndAddr)) (err error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func textLookup(key string, text []string) string {
+	p := key + "="
+	for _, t := range text {
+		if strings.HasPrefix(t, p) {
+			return strings.TrimPrefix(t, p)
+		}
+	}
+	return ""
+}
 
-	addFn := func(e dnssd.BrowseEntry) {
-		go func(e dnssd.BrowseEntry) {
-			m := MetadataAndAddr{
-				Metadata: Metadata{
-					ID:    e.Name,
-					Name:  e.Text["name"],
-					Model: e.Text["model"],
-				},
-			}
-			m.HardwareVer, _ = ParseVersion(e.Text["hw"])
-			m.FirmwareVer, _ = ParseVersion(e.Text["ver"])
-			m.Addr.IP = e.IPs[0]
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			if svc, err := dnssd.LookupInstance(ctx, e.ServiceInstanceName()); err == nil {
-				if len(e.IPs) > 0 {
-					m.Addr.Port = svc.Port
-				} else {
-					fmt.Println("no svc ips")
-				}
-			} else {
-				fmt.Printf("unable to lookup mdns service for %s err: %s\n", e.ServiceInstanceName(), err)
-			}
-
-			onDiscover(m)
-		}(e)
+func HandleMDNS(ctx context.Context, onDiscover func(m MetadataAndAddr)) {
+	resolver, err := zeroconf.NewResolver(nil)
+	if err != nil {
+		log.Fatalln("Failed to initialize resolver:", err.Error())
 	}
 
-	rmvFn := func(e dnssd.BrowseEntry) {}
+	entries := make(chan *zeroconf.ServiceEntry)
+	go func() {
+		for e := range entries {
+			m := MetadataAndAddr{
+				Metadata: Metadata{
+					ID:    e.ServiceRecord.Instance,
+					Name:  textLookup("name", e.Text),
+					Model: textLookup("model", e.Text),
+				},
+			}
+			m.HardwareVer, _ = ParseVersion(textLookup("hw", e.Text))
+			m.FirmwareVer, _ = ParseVersion(textLookup("fw", e.Text))
+			if len(e.AddrIPv4) > 0 {
+				m.Addr.IP = e.AddrIPv4[0]
+			}
+			m.Addr.Port = e.Port
+			onDiscover(m)
+		}
+	}()
 
-	return dnssd.LookupType(ctx, MdnsService, addFn, rmvFn)
+	err = resolver.Browse(ctx, "_iotfw._tcp", "local.", entries)
+	if err != nil {
+		log.Fatalln("Failed to browse:", err.Error())
+	}
+
+	<-ctx.Done()
 }
