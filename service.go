@@ -3,7 +3,6 @@ package iotfwdrv
 import (
 	"context"
 	"fmt"
-	"github.com/brutella/dnssd"
 	"github.com/olekukonko/tablewriter"
 	"io"
 	"log"
@@ -16,13 +15,17 @@ import (
 
 const MdnsService = "_iotfw._tcp.local."
 
-type DeviceMetadata struct {
+type Metadata struct {
 	ID          string
 	Name        string
-	Addr        net.TCPAddr
 	Model       string
 	HardwareVer Version
 	FirmwareVer Version
+}
+
+type MetadataAndAddr struct {
+	Metadata
+	Addr net.TCPAddr
 }
 
 type DeviceContext struct {
@@ -35,8 +38,8 @@ type ServicePlugin interface {
 	ServiceName() string
 }
 
-type ServicePluginOnDiscover interface {
-	OnDiscover(m DeviceMetadata)
+type ServicePluginOnRegister interface {
+	OnRegister(m MetadataAndAddr)
 }
 
 type ServicePluginOnConnect interface {
@@ -50,7 +53,7 @@ type ServicePluginOnDisconnect interface {
 type Service struct {
 	Networks       []net.IP
 	Log            *log.Logger
-	OnDiscover     func(m DeviceMetadata)
+	OnRegister     func(m MetadataAndAddr)
 	OnConnect      func(ctx DeviceContext)
 	OnDisconnect   func(ctx DeviceContext)
 	Plugins        []ServicePlugin
@@ -60,23 +63,15 @@ type Service struct {
 	mdnsCancelFunc context.CancelFunc
 }
 
-func (s *Service) multicastAddr() *net.UDPAddr {
-	multicastAddr, err := net.ResolveUDPAddr("udp", "226.1.13.37:5000")
-	if err != nil {
-		panic(err)
-	}
-	return multicastAddr
-}
-
 func (s *Service) exec(fn func()) {
 	if s.fnCh == nil {
 		s.fnCh = make(chan func())
+		s.devices = make(map[string]*DeviceContext)
 		go func() {
 			for fn := range s.fnCh {
 				fn()
 			}
 		}()
-		s.exec(s.init)
 	}
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
@@ -87,54 +82,10 @@ func (s *Service) exec(fn func()) {
 	wg.Wait()
 }
 
-func (s *Service) init() {
-	if s.devices == nil {
-		s.devices = make(map[string]*DeviceContext)
-	}
-
-	s.setupMDNS()
-}
-
-func (s *Service) setupMDNS() {
+func (s *Service) HandleMDNS() {
 	s.logf("setup mdns discovery")
-	var ctx context.Context
-	ctx, s.mdnsCancelFunc = context.WithCancel(context.Background())
 
-	addFn := func(e dnssd.BrowseEntry) {
-		m := DeviceMetadata{
-			ID:    e.Name,
-			Name:  e.Text["name"],
-			Model: e.Text["model"],
-		}
-		m.HardwareVer, _ = ParseVersion(e.Text["hw"])
-		m.FirmwareVer, _ = ParseVersion(e.Text["ver"])
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		if svc, err := dnssd.LookupInstance(ctx, e.ServiceInstanceName()); err == nil {
-			if len(svc.IPs) > 0 {
-				m.Addr.IP = svc.IPs[0]
-				m.Addr.Port = svc.Port
-			}
-		} else {
-			s.logf("unable to lookup mdns service for %s err: %s", e.ServiceInstanceName(), err)
-			return
-		}
-		s.logf("%+v", m)
-
-		s.exec(func() {
-			s.discovered(m)
-		})
-	}
-
-	rmvFn := func(e dnssd.BrowseEntry) {}
-
-	go func() {
-		if err := dnssd.LookupType(ctx, MdnsService, addFn, rmvFn); err != nil {
-			s.logf("unable to lookup mdns service err: %s", err)
-			return
-		}
-	}()
+	HandleMDNS(s.Register)
 }
 
 func (s *Service) logf(format string, a ...interface{}) {
@@ -143,7 +94,7 @@ func (s *Service) logf(format string, a ...interface{}) {
 	}
 }
 
-func (s *Service) fanout(info Info, key string, value string) {
+func (s *Service) fanout(info Metadata, key string, value string) {
 	slowSubscribers := make([]*Subscription, 0, len(s.subscriptions))
 	key = fmt.Sprintf("%s.%s", info.ID, key)
 	for _, sub := range s.subscriptions {
@@ -184,99 +135,101 @@ func (s *Service) Devices() []*Device {
 	return devs
 }
 
-func (s *Service) discovered(m DeviceMetadata) {
-	s.logf("[%s:%s] discovered device", m.ID, m.Name)
-	if s.OnDiscover != nil {
-		s.OnDiscover(m)
-	}
-	for _, p := range s.Plugins {
-		if fn, ok := p.(ServicePluginOnDiscover); ok {
-			s.logf("executing %s->OnDiscover for %s (%s)", p.ServiceName(), m.ID, m.Name)
-			fn.OnDiscover(m)
+func (s *Service) Register(m MetadataAndAddr) {
+	s.exec(func() {
+		s.logf("[%s:%s] register device", m.ID, m.Name)
+		if s.OnRegister != nil {
+			s.OnRegister(m)
 		}
-	}
-
-	// did we create a Device for this yet? Did the IP change or something?
-	if ctx, ok := s.devices[m.ID]; ok {
-		if !ctx.Connected() || m.Addr.String() != ctx.Addr().String() {
-			s.logf("[%s:%s] unregistering device connected: %t existingIP: %s newIp: %s",
-				ctx.Info().ID,
-				ctx.Info().Name,
-				ctx.Connected(),
-				ctx.Addr().String(),
-				m.Addr.String(),
-			)
-			ctx.reconnect = false
-			ctx.Disconnect()
-			delete(s.devices, m.ID)
-		}
-	}
-
-	if _, ok := s.devices[m.ID]; !ok {
-		s.logf("[%s:%s] registering device", m.ID, m.Name)
-
-		// attempt to dial
-		dev := New(func() (io.ReadWriteCloser, error) {
-			return net.DialTimeout("tcp", m.Addr.String(), 4*time.Second)
-		})
-
-		if err := dev.Connect(); err != nil {
-			s.logf("unable to connect to discovered device %s", err.Error())
-			return
-		}
-
-		ctx := &DeviceContext{
-			Device:    dev,
-			reconnect: true,
-		}
-		s.logf("[%s:%s] registering device", ctx.Info().ID, ctx.Info().Name)
-		s.devices[dev.Info().ID] = ctx
-
-		go func(ctx *DeviceContext) {
-			for ctx.reconnect {
-				connectErr := ctx.Connect()
-				if connectErr == nil {
-					s.logf("[%s:%s] connected", ctx.Info().ID, ctx.Info().Name)
-					ctx.ConnectedAt = time.Now()
-					s.fanout(ctx.Device.Info(), KeyEvent, KeyEventConnect)
-
-					// subscribe to everything and fanout
-					go func(ctx *DeviceContext) {
-						for m := range ctx.Subscribe(">").Chan() {
-							s.fanout(ctx.Device.Info(), m.Key, m.Value)
-						}
-					}(ctx)
-
-					if s.OnConnect != nil {
-						s.OnConnect(*ctx)
-					}
-					for _, p := range s.Plugins {
-						if fn, ok := p.(ServicePluginOnConnect); ok {
-							s.logf("executing %s->OnConnect for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
-							fn.OnConnect(*ctx)
-						}
-					}
-					waitErr := ctx.Wait()
-					s.logf("[%s:%s] disconnect uptime: %s err: %+v", ctx.Info().ID, ctx.Info().Name, time.Since(ctx.ConnectedAt), waitErr)
-					s.fanout(ctx.Device.Info(), KeyEvent, KeyEventDisconnect)
-
-					if s.OnDisconnect != nil {
-						s.OnDisconnect(*ctx)
-					}
-					for _, p := range s.Plugins {
-						if fn, ok := p.(ServicePluginOnDisconnect); ok {
-							s.logf("executing %s->OnDisconnect for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
-							fn.OnDisconnect(*ctx)
-						}
-					}
-				} else {
-					s.logf("[%s:%s] connect err: %+v", ctx.Info().ID, ctx.Info().Name, connectErr)
-					time.Sleep(5 * time.Second)
-				}
+		for _, p := range s.Plugins {
+			if fn, ok := p.(ServicePluginOnRegister); ok {
+				s.logf("executing %s->OnRegister for %s (%s)", p.ServiceName(), m.ID, m.Name)
+				fn.OnRegister(m)
 			}
-			s.logf("[%s:%s] disabling reconnect err:%+v", ctx.Info().ID, ctx.Info().Name, ctx.Wait())
-		}(ctx)
-	}
+		}
+
+		// did we create a Device for this yet? Did the IP change or something?
+		if ctx, ok := s.devices[m.ID]; ok {
+			if !ctx.Connected() || m.Addr.String() != ctx.Addr().String() {
+				s.logf("[%s:%s] unregistering device connected: %t existingIP: %s newIp: %s",
+					ctx.Info().ID,
+					ctx.Info().Name,
+					ctx.Connected(),
+					ctx.Addr().String(),
+					m.Addr.String(),
+				)
+				ctx.reconnect = false
+				ctx.Disconnect()
+				delete(s.devices, m.ID)
+			}
+		}
+
+		if _, ok := s.devices[m.ID]; !ok {
+			s.logf("[%s:%s] registering device", m.ID, m.Name)
+
+			// attempt to dial
+			dev := New(func() (io.ReadWriteCloser, error) {
+				return net.DialTimeout("tcp", m.Addr.String(), 4*time.Second)
+			})
+
+			if err := dev.Connect(); err != nil {
+				s.logf("unable to connect to Register device %s", err.Error())
+				return
+			}
+
+			ctx := &DeviceContext{
+				Device:    dev,
+				reconnect: true,
+			}
+			s.logf("[%s:%s] registering device", ctx.Info().ID, ctx.Info().Name)
+			s.devices[dev.Info().ID] = ctx
+
+			go func(ctx *DeviceContext) {
+				for ctx.reconnect {
+					connectErr := ctx.Connect()
+					if connectErr == nil {
+						s.logf("[%s:%s] connected", ctx.Info().ID, ctx.Info().Name)
+						ctx.ConnectedAt = time.Now()
+						s.fanout(ctx.Device.Info(), KeyEvent, KeyEventConnect)
+
+						// subscribe to everything and fanout
+						go func(ctx *DeviceContext) {
+							for m := range ctx.Subscribe(">").Chan() {
+								s.fanout(ctx.Device.Info(), m.Key, m.Value)
+							}
+						}(ctx)
+
+						if s.OnConnect != nil {
+							s.OnConnect(*ctx)
+						}
+						for _, p := range s.Plugins {
+							if fn, ok := p.(ServicePluginOnConnect); ok {
+								s.logf("executing %s->OnConnect for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
+								fn.OnConnect(*ctx)
+							}
+						}
+						waitErr := ctx.Wait()
+						s.logf("[%s:%s] disconnect uptime: %s err: %+v", ctx.Info().ID, ctx.Info().Name, time.Since(ctx.ConnectedAt), waitErr)
+						s.fanout(ctx.Device.Info(), KeyEvent, KeyEventDisconnect)
+
+						if s.OnDisconnect != nil {
+							s.OnDisconnect(*ctx)
+						}
+						for _, p := range s.Plugins {
+							if fn, ok := p.(ServicePluginOnDisconnect); ok {
+								s.logf("executing %s->OnDisconnect for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
+								fn.OnDisconnect(*ctx)
+							}
+						}
+					} else {
+						s.logf("[%s:%s] connect err: %+v", ctx.Info().ID, ctx.Info().Name, connectErr)
+						time.Sleep(5 * time.Second)
+					}
+				}
+				s.logf("[%s:%s] disabling reconnect err:%+v", ctx.Info().ID, ctx.Info().Name, ctx.Wait())
+			}(ctx)
+		}
+	})
 }
 
 func (s *Service) Subscribe(filter string) *Subscription {
@@ -316,4 +269,25 @@ func (s Service) RenderDevicesTable(w io.Writer) {
 		}
 	})
 	table.Render()
+}
+
+func (s *Service) ScanAndRegister() (err error) {
+	if s.Networks == nil {
+		s.Networks, err = LocalNetworks()
+		if err != nil {
+			return
+		}
+	}
+
+	strNet := make([]string, 0, len(s.Networks))
+	for _, n := range s.Networks {
+		strNet = append(strNet, n.To4().String())
+	}
+	s.logf("Attempting discovery on %s", strings.Join(strNet, ", "))
+	var devs []MetadataAndAddr
+	devs, err = Scan(s.Networks...)
+	for _, m := range devs {
+		s.Register(m)
+	}
+	return
 }

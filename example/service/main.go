@@ -26,6 +26,7 @@ func main() {
 			}
 		},
 	}
+	go svc.HandleMDNS()
 
 	go func() {
 		for m := range svc.Subscribe("*.@event").Chan() {
@@ -33,7 +34,7 @@ func main() {
 		}
 	}()
 
-	svc.OnDiscover = func(ctx iotfwdrv.DeviceMetadata) {
+	svc.OnRegister = func(ctx iotfwdrv.MetadataAndAddr) {
 		fmt.Printf("Discovered %+v\n", ctx)
 	}
 

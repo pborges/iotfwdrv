@@ -30,23 +30,15 @@ func New(dialer func() (io.ReadWriteCloser, error)) *Device {
 }
 
 type Message struct {
-	Device Info
+	Device Metadata
 	Key    string
 	Value  string
-}
-
-type Info struct {
-	ID          string
-	Name        string
-	Model       string
-	FirmwareVer Version
-	HardwareVer Version
 }
 
 type Device struct {
 	Log           *log.Logger
 	VerboseLog    bool
-	info          Info
+	info          Metadata
 	connected     bool
 	dialer        func() (io.ReadWriteCloser, error)
 	execCh        chan func()
@@ -234,7 +226,7 @@ func (dev *Device) Execute(name string, args map[string]interface{}) (res Respon
 	return
 }
 
-func (dev *Device) Info() Info {
+func (dev *Device) Info() Metadata {
 	return dev.info
 }
 

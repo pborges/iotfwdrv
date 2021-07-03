@@ -20,13 +20,19 @@ func main() {
 		Short: "Tools for interacting with the iotfw network",
 	}
 
+	var scanCmd = &cobra.Command{
+		Use:   "scan",
+		Short: "Scan for iotfw devices",
+		Long:  "Scan for iotfw devices on the given networks",
+		Run:   runScan,
+	}
+
 	var discoverCmd = &cobra.Command{
-		Use:   "discover [network] [network] [network]...",
-		Short: "Discover iotfw devices",
-		Long:  "Discover iotfw devices on given networks, if none are supplied, iotfw will attempt to use all networks this device is a part of",
+		Use:   "discover",
+		Short: "Discover for iotfw devices",
+		Long:  "Discover iotfw devices via mDNS",
 		Run:   runDiscover,
 	}
-	discoverCmd.Flags().Bool("errors", false, "display all errors")
 
 	var setCmd = &cobra.Command{
 		Use:   "set [attr] [value]",
@@ -58,20 +64,11 @@ func main() {
 	subCmd.MarkFlagRequired("ip")
 	subCmd.Flags().Int("port", 5000, "port (5000 default)")
 
-	var infoCmd = &cobra.Command{
-		Use:   "info",
-		Short: "Get info from a remote device",
-		Run:   runInfo,
-	}
-	infoCmd.Flags().String("ip", "", "remote address in <ip> format")
-	infoCmd.MarkFlagRequired("ip")
-	infoCmd.Flags().Int("port", 5000, "port (5000 default)")
-
-	rootCmd.AddCommand(discoverCmd)
+	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(setCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(subCmd)
-	rootCmd.AddCommand(infoCmd)
+	rootCmd.AddCommand(discoverCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -131,32 +128,6 @@ func runSet(cmd *cobra.Command, args []string) {
 	}
 }
 
-func runInfo(cmd *cobra.Command, args []string) {
-	ip, err := cmd.Flags().GetString("ip")
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(-1)
-	}
-	port, err := cmd.Flags().GetInt("port")
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(-1)
-	}
-	addr := fmt.Sprintf("%s:%d", ip, port)
-
-	dev := iotfwdrv.New(func() (io.ReadWriteCloser, error) {
-		return net.DialTimeout("tcp", addr, 2*time.Second)
-	})
-	dev.Log.SetOutput(os.Stdout)
-
-	if err := dev.Connect(); err == nil {
-		renderDevicetable(dev)
-	} else {
-		fmt.Println(err)
-		os.Exit(-1)
-	}
-}
-
 func runSub(cmd *cobra.Command, args []string) {
 	ip, err := cmd.Flags().GetString("ip")
 	if err != nil {
@@ -185,7 +156,8 @@ func runSub(cmd *cobra.Command, args []string) {
 		os.Exit(-1)
 	}
 }
-func runDiscover(cmd *cobra.Command, args []string) {
+
+func runScan(cmd *cobra.Command, args []string) {
 	networks, err := iotfwdrv.LocalNetworks()
 	if err != nil {
 		fmt.Println(err)
@@ -200,9 +172,9 @@ func runDiscover(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Println("Attempting discovery on", networks)
-	devs, devErrs := iotfwdrv.Discover(networks...)
+	devs, devErrs := iotfwdrv.Scan(networks...)
 
-	renderDevicetable(devs...)
+	renderMetadataTable(devs...)
 
 	if showErrors, err := cmd.Flags().GetBool("errors"); err == nil && showErrors {
 		if ipErrs, ok := devErrs.(iotfwdrv.IPErrors); ok {
@@ -217,24 +189,43 @@ func runDiscover(cmd *cobra.Command, args []string) {
 	}
 }
 
-func renderDevicetable(devs ...*iotfwdrv.Device) {
+func runDiscover(cmd *cobra.Command, args []string) {
+	devCh := make(chan iotfwdrv.MetadataAndAddr)
 
+	go func() {
+		devMap := make(map[string]iotfwdrv.MetadataAndAddr)
+		var devs []iotfwdrv.MetadataAndAddr
+		for m := range devCh {
+			if _, ok := devMap[m.ID]; !ok {
+				devs = append(devs, m)
+			}
+			devMap[m.ID] = m
+			renderMetadataTable(devs...)
+		}
+	}()
+
+	fmt.Println(iotfwdrv.HandleMDNS(func(m iotfwdrv.MetadataAndAddr) {
+		devCh <- m
+	}))
+}
+
+func renderMetadataTable(devs ...iotfwdrv.MetadataAndAddr) {
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader([]string{"ID", "Name", "Model", "HW VER", "FW VER", "IP", "PORT"})
-
+	table.SetFooter([]string{"", "", "", "", "", "TOTAL", strconv.Itoa(len(devs))})
 	sort.Slice(devs, func(i, j int) bool {
-		return strings.Compare(devs[i].Info().Name, devs[j].Info().Name) < 0
+		return strings.Compare(devs[i].Name, devs[j].Name) < 0
 	})
 
 	for _, dev := range devs {
 		table.Append([]string{
-			dev.Info().ID,
-			dev.Info().Name,
-			dev.Info().Model,
-			dev.Info().HardwareVer.String(),
-			dev.Info().FirmwareVer.String(),
-			dev.Addr().IP.String(),
-			strconv.Itoa(dev.Addr().Port),
+			dev.ID,
+			dev.Name,
+			dev.Model,
+			dev.HardwareVer.String(),
+			dev.FirmwareVer.String(),
+			dev.Addr.IP.String(),
+			strconv.Itoa(dev.Addr.Port),
 		})
 	}
 

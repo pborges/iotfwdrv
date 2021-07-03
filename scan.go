@@ -29,7 +29,7 @@ func (e IPErrors) Error() string {
 	return fmt.Sprintf("%d endpoints returned an error", len(e))
 }
 
-func Discover(networks ...net.IP) (devs []*Device, err error) {
+func Scan(networks ...net.IP) (devs []MetadataAndAddr, err error) {
 	type res struct {
 		IP net.IP
 		*Device
@@ -68,7 +68,10 @@ func Discover(networks ...net.IP) (devs []*Device, err error) {
 	for i := 0; i < addrCount; i++ {
 		res := <-out
 		if res.Device != nil && res.Device.Connected() {
-			devs = append(devs, res.Device)
+			devs = append(devs, MetadataAndAddr{
+				Metadata: res.Device.Info(),
+				Addr:     *res.Device.Addr(),
+			})
 			_ = res.Device.Disconnect()
 		} else if res.error != nil {
 			devErr = append(devErr, IPError{IP: res.IP, error: res.error})
@@ -77,7 +80,7 @@ func Discover(networks ...net.IP) (devs []*Device, err error) {
 	err = devErr
 
 	sort.Slice(devs, func(i, j int) bool {
-		return strings.Compare(devs[i].Info().ID, devs[j].Info().ID) < 0
+		return strings.Compare(devs[i].ID, devs[j].ID) < 0
 	})
 
 	return
