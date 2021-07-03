@@ -135,17 +135,6 @@ func (s *Service) Devices() []*Device {
 
 func (s *Service) Register(m MetadataAndAddr) {
 	s.exec(func() {
-		s.logf("[%s:%s] register device", m.ID, m.Name)
-		if s.OnRegister != nil {
-			s.OnRegister(m)
-		}
-		for _, p := range s.Plugins {
-			if fn, ok := p.(ServicePluginOnRegister); ok {
-				s.logf("executing %s->OnRegister for %s (%s)", p.ServiceName(), m.ID, m.Name)
-				fn.OnRegister(m)
-			}
-		}
-
 		// did we create a Device for this yet? Did the IP change or something?
 		if ctx, ok := s.devices[m.ID]; ok {
 			if !ctx.Connected() || m.Addr.String() != ctx.Addr().String() {
@@ -163,15 +152,13 @@ func (s *Service) Register(m MetadataAndAddr) {
 		}
 
 		if _, ok := s.devices[m.ID]; !ok {
-			s.logf("[%s:%s] registering device", m.ID, m.Name)
-
 			// attempt to dial
 			dev := New(func() (io.ReadWriteCloser, error) {
 				return net.DialTimeout("tcp", m.Addr.String(), 4*time.Second)
 			})
 
 			if err := dev.Connect(); err != nil {
-				s.logf("unable to connect to Register device %s", err.Error())
+				s.logf("unable to connect to register device %s", err.Error())
 				return
 			}
 
@@ -181,6 +168,17 @@ func (s *Service) Register(m MetadataAndAddr) {
 			}
 			s.logf("[%s:%s] registering device", ctx.Info().ID, ctx.Info().Name)
 			s.devices[dev.Info().ID] = ctx
+
+			// OnRegister Callbacks, do it before we start the connect loop so they come before OnConnect callbacks
+			if s.OnRegister != nil {
+				s.OnRegister(m)
+			}
+			for _, p := range s.Plugins {
+				if fn, ok := p.(ServicePluginOnRegister); ok {
+					s.logf("executing %s->OnRegister for %s (%s)", p.ServiceName(), m.ID, m.Name)
+					fn.OnRegister(m)
+				}
+			}
 
 			go func(ctx *DeviceContext) {
 				for ctx.reconnect {
