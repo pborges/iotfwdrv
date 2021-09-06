@@ -138,7 +138,7 @@ func (dev *Device) getInfo() (err error) {
 		if err != nil {
 			return
 		}
-		dev.info.FirmwareVer, err = ParseVersion(res[0].Args["ver"])
+		dev.info.FirmwareVer, err = ParseVersion(res[0].Args["fw"])
 		if err != nil {
 			return
 		}
