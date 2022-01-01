@@ -389,13 +389,26 @@ func (dev *Device) fanout(key string, value string) {
 }
 
 func (dev *Device) Subscribe(filter string) *Subscription {
+	/** I moved the assignment of the execCh into the protected func in an attempt to fix this panic I got at runtime
+
+	Dec 31 02:34:44 cumulus homectl[38001]: [signal SIGSEGV: segmentation violation code=0x1 addr=0x70 pc=0x744bf6]
+	Dec 31 02:34:44 cumulus homectl[38001]: goroutine 1021639 [running]:
+	Dec 31 02:34:44 cumulus homectl[38001]: github.com/pborges/iotfwdrv.(*Device).Subscribe(...)
+	Dec 31 02:34:44 cumulus homectl[38001]:         /home/pborges/go/src/github.com/pborges/homectl/vendor/github.com/pborges/iotfwdrv/device.go:396
+	Dec 31 02:34:44 cumulus homectl[38001]: github.com/pborges/homectl/homekit.(*Switch).Start.func1()
+	Dec 31 02:34:44 cumulus homectl[38001]:         /home/pborges/go/src/github.com/pborges/homectl/homekit/switch.go:62 +0xb6
+	Dec 31 02:34:44 cumulus homectl[38001]: created by github.com/pborges/homectl/homekit.(*Switch).Start
+	Dec 31 02:34:44 cumulus homectl[38001]:         /home/pborges/go/src/github.com/pborges/homectl/homekit/switch.go:61 +0x5f
+	Dec 31 02:34:44 cumulus systemd[1]: homectl.service: Main process exited, code=exited, status=2/INVALIDARGUMENT
+	*/
+
 	sub := &Subscription{
 		device: dev,
 		filter: filter,
 		ch:     make(chan Message, 10),
-		execCh: dev.execCh,
 	}
 	dev.execCh <- func() {
+		sub.execCh = dev.execCh
 		dev.subscriptions = append(dev.subscriptions, sub)
 	}
 	return sub
