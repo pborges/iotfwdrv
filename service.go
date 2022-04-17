@@ -45,7 +45,7 @@ type ServicePluginOnConnect interface {
 }
 
 type ServicePluginOnDisconnect interface {
-	OnDisconnect(ctx DeviceContext)
+	OnDisconnect(ctx DeviceContext, err error)
 }
 
 type Service struct {
@@ -53,7 +53,7 @@ type Service struct {
 	Log            *log.Logger
 	OnRegister     func(m MetadataAndAddr)
 	OnConnect      func(ctx DeviceContext)
-	OnDisconnect   func(ctx DeviceContext)
+	OnDisconnect   func(ctx DeviceContext, err error)
 	Plugins        []ServicePlugin
 	devices        map[string]*DeviceContext
 	fnCh           chan func()
@@ -209,12 +209,12 @@ func (s *Service) Register(m MetadataAndAddr) {
 						s.fanout(ctx.Device.Info(), KeyEvent, KeyEventDisconnect)
 
 						if s.OnDisconnect != nil {
-							s.OnDisconnect(*ctx)
+							s.OnDisconnect(*ctx, waitErr)
 						}
 						for _, p := range s.Plugins {
 							if fn, ok := p.(ServicePluginOnDisconnect); ok {
 								s.logf("executing %s->OnDisconnect for %s (%s)", p.ServiceName(), dev.Info().ID, dev.info.Name)
-								fn.OnDisconnect(*ctx)
+								fn.OnDisconnect(*ctx, waitErr)
 							}
 						}
 					} else {
